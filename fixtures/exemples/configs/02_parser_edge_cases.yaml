@@ -1,0 +1,35 @@
+# Config pour examples/dumps/02_parser_edge_cases.sql
+# Seules les colonnes `email` sont transformées. Tout le reste doit ressortir
+# byte-à-byte identique (y compris échappements, hex, _binary, vues, triggers).
+
+version: 1
+
+source:
+  kind: mysql
+
+mode: anonymize
+
+defaults:
+  locale: fr_FR
+  on_unclassified: fail
+
+tables:
+  order:
+    email: email
+    key: keep
+    desc: keep          # texte libre volontairement gardé ici pour tester le round-trip
+
+  misc:
+    email: email
+    blob_col: keep
+    bin_col: keep
+
+  gen:
+    email: email
+    # email_domain est une colonne GENERATED : absente des INSERT, ne doit pas
+    # être exigée par la config ni faire échouer check
+
+  empty_table:
+    email: email
+
+review: []

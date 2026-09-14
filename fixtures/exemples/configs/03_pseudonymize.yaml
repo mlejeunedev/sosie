@@ -1,0 +1,52 @@
+# Identique à 01_basic.yaml mais en mode pseudonymize.
+# Lancer avec : DBCLONE_KEY=test-key-do-not-use-in-prod
+# Deux exécutions successives doivent produire une sortie byte-à-byte identique.
+
+version: 1
+
+source:
+  kind: mysql
+
+mode: pseudonymize
+
+defaults:
+  locale: fr_FR
+  on_unclassified: fail
+
+tables:
+  user:
+    email: email
+    first_name: first_name
+    last_name: last_name
+    phone: phone
+    birth_date: { preset: date_shift, days: 365 }
+    password: constant("$2y$13$DEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVO")
+    api_token: null
+    nickname: null
+    roles: keep
+
+  address:
+    line1: address_line
+    line2: null
+    city: city
+    postcode: { preset: postcode, keep_department: true }
+    country: keep
+
+  order:
+    customer_email: email
+    notes: null
+    amount: keep
+    reference: keep
+
+  bank_account:
+    iban: iban
+    bic: bic
+    holder_name: full_name
+
+  product:
+    name: keep
+
+skip_tables:
+  - audit_log
+
+review: []

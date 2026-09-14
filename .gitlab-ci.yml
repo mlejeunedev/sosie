@@ -1,0 +1,31 @@
+stages:
+  - lint
+  - test
+
+variables:
+  CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
+
+default:
+  image: rust:1.85
+  before_script:
+    - rustup component add rustfmt clippy
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cargo/
+      - target/
+
+fmt:
+  stage: lint
+  script:
+    - cargo fmt --check
+
+clippy:
+  stage: lint
+  script:
+    - cargo clippy --all-targets -- -D warnings
+
+test:
+  stage: test
+  script:
+    - cargo test

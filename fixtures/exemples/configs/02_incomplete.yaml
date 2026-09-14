@@ -1,0 +1,25 @@
+# Config volontairement incomplète pour examples/dumps/01_basic.sql
+# Attendu : `dbclone check` échoue, `dbclone transform` refuse de démarrer
+# et n'écrit AUCUN octet en sortie.
+#
+# Manquants : user.phone, user.password, address.line1, bank_account.* ,
+#             order.notes, order.customer_email, et audit_log n'est pas skippée.
+
+version: 1
+
+source:
+  kind: mysql
+
+mode: anonymize
+
+defaults:
+  locale: fr_FR
+  on_unclassified: fail
+
+tables:
+  user:
+    email: email
+    first_name: first_name
+    last_name: last_name
+
+review: []

@@ -1,0 +1,50 @@
+# Ce que `dbclone init --from examples/dumps/01_basic.sql` DOIT générer
+# (sans --doctrine). Les commentaires indiquent le signal déclencheur.
+# Les valeurs exactes des scores peuvent bouger ; ce qui est testé :
+#   - chaque colonne ci-dessous est présente, avec ce preset
+#   - la section review contient exactement ces entrées
+#   - aucune autre colonne n'apparaît
+
+version: 1
+
+source:
+  kind: mysql
+
+mode: anonymize
+
+defaults:
+  locale: fr_FR
+  on_unclassified: fail
+
+tables:
+  user:
+    email: email                     # nom + contenu (5/5 emails)
+    first_name: first_name           # nom
+    last_name: last_name             # nom
+    phone: phone                     # nom + contenu (3/3 téléphones)
+    birth_date: { preset: date_shift, days: 365 }   # nom (birth)
+    password: constant("$2y$13$DEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVO")  # nom (password)
+    api_token: null                  # nom (token)
+
+  address:
+    line1: address_line              # nom (line1) dans une table "address"
+    line2: null                      # nom (line2) — nullable → null
+    city: city                       # nom
+    postcode: postcode               # nom
+
+  order:
+    customer_email: email            # nom + contenu (4/4 emails)
+
+  bank_account:
+    iban: iban                       # nom + contenu (2/2 IBAN mod 97 OK)
+    bic: bic                         # nom
+    holder_name: full_name           # nom (holder + name)
+
+  audit_log:
+    ip_address: ip                   # nom + contenu (2/2 IP)
+
+review:
+  - user.nickname                    # nom générique + varchar(50) : peut-être un pseudo identifiant
+  - order.notes                      # texte libre, contient un téléphone dans 1/3 des valeurs
+  - audit_log.payload                # JSON contenant une clé "email"
+  - product.name                     # "name" hors contexte personne : score moyen, à trancher
