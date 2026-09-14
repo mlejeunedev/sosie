@@ -44,7 +44,7 @@ pub enum Value<'a> {
     Raw(&'a [u8]),
 
     /// Contenu désescapé d'une chaîne `'…'`. Le sérialiseur ré-échappe.
-    Str(Cow<'a, [u8]>)
+    Str(Cow<'a, [u8]>),
 }
 
 /// Un événement produit par un [`DumpParser`] et consommé par un [`DumpWriter`].
