@@ -12,6 +12,10 @@ pub struct Column {
     pub nullable: bool,
     pub max_len: Option<u32>,
     pub generated: bool,
+    /// `true` si cette colonne, à elle seule, est couverte par une contrainte
+    /// `PRIMARY KEY` ou `UNIQUE KEY` (les clés composites ne comptent pas :
+    /// aucune de leurs colonnes individuelles n'est unique à elle seule).
+    pub unique: bool,
 }
 
 /// Une table telle que déclarée dans un `CREATE TABLE`.

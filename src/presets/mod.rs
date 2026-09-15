@@ -167,7 +167,14 @@ impl Preset for EmailPreset {
         let mut rng = seed.rng();
         let first = pick(&mut rng, first_names()).to_lowercase();
         let last = pick(&mut rng, last_names()).to_lowercase();
-        str_owned(format!("{first}.{last}@example.org"))
+        // `first`/`last` ne donnent que ~50×50 combinaisons : sur un vrai
+        // volume de lignes, deux valeurs d'entrée différentes finiraient par
+        // produire le même faux email (déjà ~18 % de collisions sur 1000
+        // entrées avant ce correctif), ce qui viole une contrainte UNIQUE au
+        // moment de l'import. Le suffixe hexadécimal, dérivé du reste de la
+        // graine, rend ça négligeable sans perdre le déterminisme.
+        let suffix: u32 = rng.random_range(0..0x1000000);
+        str_owned(format!("{first}.{last}.{suffix:06x}@example.org"))
     }
 }
 
@@ -515,6 +522,33 @@ mod tests {
         let s = String::from_utf8(s.into_owned()).unwrap();
         assert!(s.ends_with("@example.org"));
         assert!(s.contains('.'));
+    }
+
+    #[test]
+    fn email_preset_does_not_collide_on_distinct_inputs() {
+        // Une colonne `email` a presque toujours une contrainte UNIQUE en
+        // prod : deux entrées différentes ne doivent (quasiment) jamais
+        // produire la même sortie, sous peine de faire planter l'import.
+        use std::collections::HashSet;
+        let mut outputs = HashSet::new();
+        for i in 0..1000 {
+            let input = format!("user{i}@real-domain.example");
+            let seed = seed_for(b"k", "email", input.as_bytes());
+            let out = EmailPreset.apply(
+                &Value::Str(Cow::Borrowed(input.as_bytes())),
+                &seed,
+                &ColumnCtx { max_len: None },
+            );
+            let Value::Str(s) = out else {
+                panic!("attendu Str")
+            };
+            outputs.insert(s.into_owned());
+        }
+        assert_eq!(
+            outputs.len(),
+            1000,
+            "1000 entrées distinctes doivent donner 1000 sorties distinctes"
+        );
     }
 
     #[test]
