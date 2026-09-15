@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Write};
 
 use anyhow::{Context, Result, bail};
@@ -29,12 +30,37 @@ struct TablePlan {
     /// Colonnes couvertes par une contrainte `PRIMARY KEY`/`UNIQUE KEY` mono-colonne :
     /// leurs valeurs générées par preset ne doivent jamais entrer en collision.
     unique_columns: HashSet<String>,
-    /// Par colonne unique : valeur d'origine -> valeur déjà attribuée (pour
-    /// qu'une même entrée redonne toujours la même sortie, cf. `dedup_by_input`).
-    dedup_by_input: HashMap<String, HashMap<Vec<u8>, Vec<u8>>>,
-    /// Par colonne unique : ensemble des sorties déjà attribuées, pour
-    /// détecter une collision entre deux entrées différentes.
-    used_outputs: HashMap<String, HashSet<Vec<u8>>>,
+    /// Par colonne unique : empreinte de la valeur d'origine -> numéro de
+    /// tentative retenu (pour qu'une même entrée redonne toujours la même
+    /// sortie, cf. `resolve_unique_preset_value`).
+    dedup_by_input: HashMap<String, HashMap<u128, u32>>,
+    /// Par colonne unique : empreintes (64 bits, cf. [`short_fingerprint`])
+    /// des sorties déjà attribuées, pour détecter une collision entre deux
+    /// entrées différentes.
+    used_outputs: HashMap<String, HashSet<u64>>,
+}
+
+/// Empreinte 128 bits d'une valeur, pour l'état de déduplication des colonnes
+/// `UNIQUE` : on ne conserve jamais les valeurs elles-mêmes (ni d'origine, ni
+/// générées), seulement ~50 octets par entrée au lieu de ~300.
+///
+/// Deux SipHash-1-3 indépendants (entrée nue / entrée préfixée). Une collision
+/// accidentelle est de l'ordre de 2^-128 ; et si elle survenait, l'effet
+/// serait au pire une variante de sortie tirée pour rien.
+fn fingerprint(bytes: &[u8]) -> u128 {
+    let mut b = DefaultHasher::new();
+    0xFFu8.hash(&mut b);
+    bytes.hash(&mut b);
+    ((short_fingerprint(bytes) as u128) << 64) | b.finish() as u128
+}
+
+/// Empreinte 64 bits, suffisante pour l'ensemble des sorties attribuées : un
+/// faux positif y coûte seulement une variante tirée pour rien (jamais un
+/// doublon), et l'ensemble tient en 8 octets par entrée.
+fn short_fingerprint(bytes: &[u8]) -> u64 {
+    let mut a = DefaultHasher::new();
+    bytes.hash(&mut a);
+    a.finish()
 }
 
 /// Dérive la clé HMAC à utiliser pour toute la transformation.
@@ -142,11 +168,14 @@ const MAX_DEDUP_ATTEMPTS: u32 = 1000;
 /// Calcule la sortie d'un preset pour une colonne `UNIQUE`, en garantissant
 /// qu'elle ne collisionne jamais avec une sortie déjà attribuée à une AUTRE
 /// valeur d'origine dans cette même colonne :
-/// - même entrée déjà vue -> on renvoie exactement la même sortie qu'avant
-///   (préserve la cohérence habituelle, ex. deux lignes avec le même email) ;
+/// - même entrée déjà vue -> on recalcule exactement la même sortie qu'avant
+///   (le numéro de tentative retenu suffit, le preset étant déterministe) ;
 /// - entrée nouvelle -> on calcule normalement, et seulement en cas de
 ///   collision réelle avec une autre entrée on retire une variante (graine
 ///   perturbée par un numéro de tentative) jusqu'à en trouver une libre.
+///
+/// L'état ne contient que des empreintes (cf. [`fingerprint`]) : la mémoire
+/// reste bornée même avec des dizaines de millions de valeurs uniques.
 #[allow(clippy::too_many_arguments)]
 fn resolve_unique_preset_value(
     preset: &dyn Preset,
@@ -154,16 +183,11 @@ fn resolve_unique_preset_value(
     raw: &[u8],
     key: &[u8],
     max_len: Option<u32>,
-    dedup_map: &mut HashMap<Vec<u8>, Vec<u8>>,
-    used_outputs: &mut HashSet<Vec<u8>>,
+    dedup_map: &mut HashMap<u128, u32>,
+    used_outputs: &mut HashSet<u64>,
     report: &mut crate::report::ColumnReport,
 ) -> Vec<u8> {
-    if let Some(existing) = dedup_map.get(raw) {
-        return existing.clone();
-    }
-
-    let mut candidate = Vec::new();
-    for attempt in 0..=MAX_DEDUP_ATTEMPTS {
+    let compute = |attempt: u32, report: &mut crate::report::ColumnReport| -> Option<Vec<u8>> {
         let seed_name = if attempt == 0 {
             Cow::Borrowed(preset_name)
         } else {
@@ -175,35 +199,53 @@ fn resolve_unique_preset_value(
             &seed,
             &ColumnCtx { max_len },
         );
-        let mut bytes = match out {
-            Value::Str(s) => s.into_owned(),
-            other => {
-                // Un preset appliqué à un `Str` doit renvoyer un `Str` ; s'il
-                // ne le fait pas, on n'a rien à dédupliquer.
-                dedup_map.insert(raw.to_vec(), Vec::new());
-                return match other {
-                    Value::Raw(b) => b.to_vec(),
-                    _ => Vec::new(),
-                };
+        match out {
+            Value::Str(s) => {
+                let bytes = s.into_owned();
+                Some(match max_len {
+                    Some(max) => truncate_to_chars(&bytes, max as usize, report),
+                    None => bytes,
+                })
             }
-        };
-        if let Some(max) = max_len {
-            bytes = truncate_to_chars(&bytes, max as usize, report);
+            // Un preset appliqué à un `Str` doit renvoyer un `Str` ; s'il ne
+            // le fait pas, on n'a rien à dédupliquer.
+            Value::Raw(b) => {
+                let _ = b;
+                None
+            }
+            Value::Null => None,
         }
-        if used_outputs.insert(bytes.clone()) {
-            candidate = bytes;
-            break;
-        }
-        candidate = bytes;
+    };
+
+    let input_fp = fingerprint(raw);
+    if let Some(&attempt) = dedup_map.get(&input_fp) {
+        // Déjà comptée dans le rapport la première fois : rapport jetable.
+        let mut scratch = crate::report::ColumnReport::default();
+        return compute(attempt, &mut scratch).unwrap_or_default();
     }
 
-    dedup_map.insert(raw.to_vec(), candidate.clone());
+    let mut candidate = Vec::new();
+    let mut chosen = 0;
+    for attempt in 0..=MAX_DEDUP_ATTEMPTS {
+        let Some(bytes) = compute(attempt, report) else {
+            dedup_map.insert(input_fp, attempt);
+            return Vec::new();
+        };
+        chosen = attempt;
+        let free = used_outputs.insert(short_fingerprint(&bytes));
+        candidate = bytes;
+        if free {
+            break;
+        }
+    }
+
+    dedup_map.insert(input_fp, chosen);
     candidate
 }
 
 /// État de déduplication d'une colonne `UNIQUE` : (entrée -> sortie déjà
 /// attribuée, ensemble des sorties déjà attribuées).
-type UniqueDedupState<'a> = (&'a mut HashMap<Vec<u8>, Vec<u8>>, &'a mut HashSet<Vec<u8>>);
+type UniqueDedupState<'a> = (&'a mut HashMap<u128, u32>, &'a mut HashSet<u64>);
 
 #[allow(clippy::too_many_arguments)]
 fn apply_action<'a>(
@@ -276,6 +318,20 @@ fn apply_action<'a>(
     }
 }
 
+/// Avancement de la transformation, remonté à l'appelant (affichage d'une
+/// barre de progression, journal…). Ne transporte jamais une valeur de donnée.
+#[derive(Debug, Clone, Copy)]
+pub enum Progress<'a> {
+    /// Un `CREATE TABLE` vient d'être lu : on entre dans cette table.
+    Table(&'a str),
+    /// Nombre total de lignes émises depuis le début (envoyé par paquets de
+    /// [`PROGRESS_EVERY_ROWS`] et à chaque fin d'`INSERT`).
+    Rows(u64),
+}
+
+/// Fréquence (en lignes) des notifications [`Progress::Rows`].
+pub const PROGRESS_EVERY_ROWS: u64 = 2_048;
+
 /// Exécute la transformation complète d'un dump `mysqldump`, du flux d'entrée
 /// vers le flux de sortie, en suivant `config`.
 pub fn run<R: Read, W: Write>(
@@ -284,6 +340,17 @@ pub fn run<R: Read, W: Write>(
     writer: W,
     report: &mut Report,
 ) -> Result<()> {
+    run_with_progress(config, reader, writer, report, |_| {})
+}
+
+/// Comme [`run`], en appelant `on_progress` au fil de l'eau.
+pub fn run_with_progress<R: Read, W: Write, F: FnMut(Progress<'_>)>(
+    config: &Config,
+    reader: R,
+    writer: W,
+    report: &mut Report,
+    mut on_progress: F,
+) -> Result<()> {
     let key = resolve_key(config)?;
     let mut parser = MysqlParser::new(reader);
     let mut out = MysqlWriter::new(writer);
@@ -291,10 +358,12 @@ pub fn run<R: Read, W: Write>(
     let mut plan: Option<TablePlan> = None;
     let mut current_order: Vec<String> = Vec::new();
     let mut skipping = false;
+    let mut rows_total: u64 = 0;
 
     while let Some(event) = parser.next_event()? {
         match event {
             Event::TableSchema(ref table) => {
+                on_progress(Progress::Table(&table.name));
                 let new_plan = build_table_plan(config, table)?;
                 report.table_mut(&table.name).skipped = new_plan.skip;
                 plan = Some(new_plan);
@@ -310,10 +379,13 @@ pub fn run<R: Read, W: Write>(
                     .filter(|p| &p.table == table)
                     .with_context(|| format!("INSERT INTO {table} sans CREATE TABLE préalable"))?;
                 skipping = p.skip;
-                current_order = columns.clone().unwrap_or_else(|| p.schema_order.clone());
-                if !skipping {
-                    out.write_event(&event)?;
+                if skipping {
+                    // Ni écrite ni parsée : on saute directement à l'instruction suivante.
+                    parser.skip_rows();
+                    continue;
                 }
+                current_order = columns.clone().unwrap_or_else(|| p.schema_order.clone());
+                out.write_event(&event)?;
             }
             Event::Row(ref values) => {
                 if skipping {
@@ -354,8 +426,13 @@ pub fn run<R: Read, W: Write>(
                 tr.rows_in += 1;
                 tr.rows_out += 1;
                 out.write_event(&Event::Row(transformed))?;
+                rows_total += 1;
+                if rows_total % PROGRESS_EVERY_ROWS == 0 {
+                    on_progress(Progress::Rows(rows_total));
+                }
             }
             Event::RowsEnd => {
+                on_progress(Progress::Rows(rows_total));
                 if !skipping {
                     out.write_event(&event)?;
                 }
@@ -505,6 +582,7 @@ tables:
         let mut used = HashSet::new();
         let mut report = crate::report::ColumnReport::default();
         let mut outputs = HashSet::new();
+        let mut first_for_input_3 = Vec::new();
 
         for i in 0..10 {
             let input = format!("input-{i}");
@@ -518,6 +596,9 @@ tables:
                 &mut used,
                 &mut report,
             );
+            if i == 3 {
+                first_for_input_3 = out.clone();
+            }
             outputs.insert(out);
         }
 
@@ -538,6 +619,11 @@ tables:
             &mut used,
             &mut report,
         );
-        assert_eq!(again, dedup_map[b"input-3".as_slice()]);
+        assert_eq!(again, first_for_input_3);
+        assert_eq!(
+            used.len(),
+            10,
+            "une entrée répétée ne consomme pas de nouvelle sortie"
+        );
     }
 }

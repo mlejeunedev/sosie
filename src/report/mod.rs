@@ -2,6 +2,7 @@
 //! jamais une valeur de donnée.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
@@ -55,32 +56,49 @@ impl Report {
         }
     }
 
-    pub fn print_terminal(&self) {
-        println!(
-            "sosie transform — terminé en {:.1}s",
-            self.duration_ms as f64 / 1000.0
-        );
+    /// Nombre total de lignes émises, toutes tables confondues.
+    pub fn rows_out(&self) -> u64 {
+        self.tables.values().map(|t| t.rows_out).sum()
+    }
+
+    /// Écrit le rapport lisible sur `w` (stdout ou stderr selon que stdout
+    /// transporte déjà le dump ou non).
+    pub fn write_terminal<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "sosie transform — terminé en {:.1}s · {} lignes · {} tables",
+            self.duration_ms as f64 / 1000.0,
+            self.rows_out(),
+            self.tables.len()
+        )?;
         for (table, t) in &self.tables {
             if t.skipped {
-                println!("  {table} — skippée (structure gardée, 0 ligne)");
+                writeln!(w, "  {table} — skippée (structure gardée, 0 ligne)")?;
                 continue;
             }
-            println!("  {table} — {} lignes", t.rows_out);
+            writeln!(w, "  {table} — {} lignes", t.rows_out)?;
             for (column, c) in &t.columns {
                 if c.transformed > 0 || c.truncated > 0 {
-                    println!(
+                    writeln!(
+                        w,
                         "    {column}: {} transformées, {} null, {} gardées, {} tronquées",
                         c.transformed, c.null, c.kept, c.truncated
-                    );
+                    )?;
                 }
             }
         }
         if !self.raw_notable.is_empty() {
-            println!(
+            writeln!(
+                w,
                 "  Objets non ré-générés (VIEW/TRIGGER/PROCEDURE) : {}",
                 self.raw_notable.join(", ")
-            );
+            )?;
         }
+        Ok(())
+    }
+
+    pub fn print_terminal(&self) {
+        let _ = self.write_terminal(&mut std::io::stdout().lock());
     }
 
     pub fn write_json(&self, dir: &Path) -> Result<()> {

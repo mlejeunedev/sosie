@@ -86,6 +86,12 @@ pub enum Event<'a> {
 pub trait DumpParser {
     /// Lit et retourne le prochain événement, ou `None` en fin de flux.
     fn next_event(&mut self) -> Result<Option<Event<'_>>>;
+
+    /// Abandonne les `Row` du bloc `INSERT` ouvert par le dernier `RowsBegin`
+    /// (ni `Row` ni `RowsEnd` ne seront émis pour ce bloc) : le prochain
+    /// événement est l'instruction suivante. Permet de ne pas payer le parsing
+    /// des tuples d'une table que l'appelant n'écrira pas.
+    fn skip_rows(&mut self);
 }
 
 pub trait DumpWriter {

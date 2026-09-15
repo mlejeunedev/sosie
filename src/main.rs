@@ -13,6 +13,9 @@ use sosie::report::Report;
 use sosie::scan;
 use sosie::transform;
 
+mod progress;
+use progress::Progress;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "sosie",
@@ -100,22 +103,26 @@ fn cmd_transform(args: TransformArgs) -> Result<bool> {
     };
     let mut report = Report::new(mode_label);
 
-    let reader: Box<dyn Read> = match &args.from {
-        Some(path) => {
-            Box::new(File::open(path).with_context(|| format!("ouverture de {}", path.display()))?)
-        }
-        None => Box::new(io::stdin()),
-    };
+    let (reader, total_bytes) = open_input(args.from.as_deref())?;
+    let mut progress = Progress::new(total_bytes, mode_label);
+    let reader = progress.wrap_read(reader);
+    let on_progress = |ev: transform::Progress<'_>| progress.update(ev);
 
     if args.dry_run {
-        transform::run(&config, reader, io::sink(), &mut report)?;
+        transform::run_with_progress(&config, reader, io::sink(), &mut report, on_progress)?;
     } else {
         match &args.out {
             Some(path) => {
                 let tmp_path = tmp_path_for(path);
                 let file = File::create(&tmp_path)
                     .with_context(|| format!("création de {}", tmp_path.display()))?;
-                let result = transform::run(&config, reader, BufWriter::new(file), &mut report);
+                let result = transform::run_with_progress(
+                    &config,
+                    reader,
+                    BufWriter::new(file),
+                    &mut report,
+                    on_progress,
+                );
                 match result {
                     Ok(()) => {
                         std::fs::rename(&tmp_path, path).with_context(|| {
@@ -134,15 +141,50 @@ fn cmd_transform(args: TransformArgs) -> Result<bool> {
             }
             None => {
                 let stdout = io::stdout();
-                transform::run(&config, reader, BufWriter::new(stdout.lock()), &mut report)?;
+                transform::run_with_progress(
+                    &config,
+                    reader,
+                    BufWriter::new(stdout.lock()),
+                    &mut report,
+                    on_progress,
+                )?;
             }
         }
     }
 
+    progress.finish_rows();
     report.finish();
-    report.print_terminal();
+    // Si le dump part sur stdout, le rapport ne doit pas s'y mélanger.
+    if args.out.is_none() && !args.dry_run {
+        let _ = report.write_terminal(&mut io::stderr().lock());
+    } else {
+        report.print_terminal();
+    }
     let _ = report.write_json(std::path::Path::new(".sosie"));
     Ok(true)
+}
+
+/// Ouvre le flux d'entrée (`path`, sinon stdin) et retourne sa taille si
+/// elle est connue, pour dimensionner la barre de progression.
+fn open_input(path: Option<&std::path::Path>) -> Result<(Box<dyn Read>, Option<u64>)> {
+    match path {
+        Some(path) => {
+            let file =
+                File::open(path).with_context(|| format!("ouverture de {}", path.display()))?;
+            let len = file.metadata().ok().map(|m| m.len()).filter(|&l| l > 0);
+            Ok((Box::new(file), len))
+        }
+        None => Ok((Box::new(io::stdin()), None)),
+    }
+}
+
+/// Analyse un dump avec un spinner « analyse » sur stderr.
+fn scan_with_progress(path: &std::path::Path) -> Result<Vec<scan::ScannedTable>> {
+    let (reader, total_bytes) = open_input(Some(path))?;
+    let progress = Progress::new(total_bytes, "analyse");
+    let tables = scan::scan_dump(progress.wrap_read(reader))?;
+    progress.finish(&format!("{} tables", tables.len()));
+    Ok(tables)
 }
 
 fn tmp_path_for(path: &std::path::Path) -> PathBuf {
@@ -152,9 +194,7 @@ fn tmp_path_for(path: &std::path::Path) -> PathBuf {
 }
 
 fn cmd_init(args: InitArgs) -> Result<bool> {
-    let file =
-        File::open(&args.from).with_context(|| format!("ouverture de {}", args.from.display()))?;
-    let tables = scan::scan_dump(file)?;
+    let tables = scan_with_progress(&args.from)?;
     let yaml = scan::render_init_yaml(&tables);
     std::fs::write(&args.out, yaml)
         .with_context(|| format!("écriture de {}", args.out.display()))?;
@@ -169,9 +209,7 @@ fn cmd_init(args: InitArgs) -> Result<bool> {
 
 fn cmd_check(args: CheckArgs) -> Result<bool> {
     let config = Config::load(&args.config)?;
-    let file =
-        File::open(&args.from).with_context(|| format!("ouverture de {}", args.from.display()))?;
-    let tables = scan::scan_dump(file)?;
+    let tables = scan_with_progress(&args.from)?;
     let classifications = scan::classify(&tables);
 
     let exempt = |table: &str| {
