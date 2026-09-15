@@ -2,22 +2,32 @@ use std::borrow::Cow;
 
 use anyhow::Result;
 
+pub mod mysql;
+
 /// Une colonne telle que déclarée dans un `CREATE TABLE`.
+#[derive(Debug, Clone)]
 pub struct Column {
-    name: String,
-    sql_type: SqlType,
-    nullable: bool,
-    max_len: Option<u32>,
-    generated: bool,
+    pub name: String,
+    pub sql_type: SqlType,
+    pub nullable: bool,
+    pub max_len: Option<u32>,
+    pub generated: bool,
 }
 
 /// Une table telle que déclarée dans un `CREATE TABLE`.
+#[derive(Debug, Clone)]
 pub struct Table {
-    name: String,
-    columns: Vec<Column>,
+    pub name: String,
+    pub columns: Vec<Column>,
+    /// Définitions `FOREIGN KEY` brutes, conservées pour la v0.2 (coût nul ici).
+    pub foreign_keys: Vec<String>,
+    /// L'instruction `CREATE TABLE` complète, telle que lue dans le dump :
+    /// on ne régénère jamais un `CREATE TABLE`, on le réécrit à l'identique.
+    pub raw: Vec<u8>,
 }
 
 /// Type SQL d'une colonne, tel qu'extrait de sa déclaration `CREATE TABLE`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlType {
     Int,
     Decimal,
@@ -35,6 +45,7 @@ pub enum SqlType {
 }
 
 /// Une valeur brute lue depuis un tuple de `VALUES`.
+#[derive(Debug, Clone)]
 pub enum Value<'a> {
     /// Le littéral SQL `NULL`.
     Null,
@@ -58,6 +69,9 @@ pub enum Event<'a> {
         table: String,
         /// `Some` si l'`INSERT` a une liste de colonnes explicite (cas des colonnes générées).
         columns: Option<Vec<String>>,
+        /// Texte brut de `INSERT INTO ... VALUES ` (jusqu'au premier `(` inclus
+        /// exclu), conservé pour réécrire le préfixe à l'identique.
+        prefix: &'a [u8],
     },
     /// Un tuple de valeurs, dans l'ordre de `RowsBegin.columns` si présent, sinon celui de la table.
     Row(Vec<Value<'a>>),
