@@ -728,16 +728,28 @@ impl<R: Read> DumpParser for MysqlParser<R> {
                 Some(s) => s,
                 None => return Ok(None),
             };
-            let decision = if starts_with_ci(stmt, b"CREATE TABLE") {
-                Decision::Table(parse_create_table(stmt)?)
-            } else if starts_with_ci(stmt, b"INSERT INTO") {
-                let head = parse_insert_head(stmt)?;
-                let tuples = find_value_tuples(stmt, head.prefix_end)?;
+            // Une instruction peut commencer par des lignes blanches (les
+            // dumps ne sont pas tous aussi disciplinés que `mysqldump`, qui
+            // sépare toujours ses sections par un commentaire `--`) : sans ce
+            // décalage, `starts_with_ci` échoue sur le `CREATE TABLE` /
+            // `INSERT INTO` réel et l'instruction est silencieusement prise
+            // pour du `Raw` — la table ou les lignes disparaissent du scan
+            // sans la moindre erreur.
+            let leading = skip_ws(stmt, 0);
+            let body = &stmt[leading..];
+            let decision = if starts_with_ci(body, b"CREATE TABLE") {
+                Decision::Table(parse_create_table(body)?)
+            } else if starts_with_ci(body, b"INSERT INTO") {
+                let head = parse_insert_head(body)?;
+                let tuples = find_value_tuples(body, head.prefix_end)?;
                 Decision::Insert {
                     table: head.table,
                     columns: head.columns,
-                    prefix_end: head.prefix_end,
-                    tuples,
+                    prefix_end: leading + head.prefix_end,
+                    tuples: tuples
+                        .into_iter()
+                        .map(|(s, e)| (leading + s, leading + e))
+                        .collect(),
                 }
             } else {
                 Decision::Raw
