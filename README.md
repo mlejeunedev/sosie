@@ -1,134 +1,99 @@
-# Micro-tests
+# Sosie
 
-Chaque test = un dump + une config + des assertions. Ils sont écrits **avant** le code : c'est la spec exécutable. À porter en tests Rust (`insta` pour les golden, `assert_cmd` pour la CLI) dès que le binaire existe. Le script `run.sh` donne une version bash provisoire.
+**Copie une base MySQL de production sur un poste de développeur, sans qu'une seule donnée personnelle réelle ne s'y retrouve.**
 
-Variables communes : `DBCLONE_KEY=test-key-do-not-use-in-prod` quand le mode est `pseudonymize`.
+Sosie lit un dump `mysqldump`, remplace les colonnes sensibles (email, nom, téléphone, IBAN, adresse...) par des valeurs fictives mais plausibles, et réécrit un dump SQL valide — en streaming, sans jamais charger le fichier entier en mémoire.
 
----
-
-## T01 — Round-trip sans transformation (fondation)
-
-**Entrée** : `dumps/01_basic.sql`, puis `dumps/02_parser_edge_cases.sql`
-**Commande** : `dbclone transform --passthrough < dump.sql > out.sql`
-**Assertions** :
-- `cmp dump.sql out.sql` → identique byte à byte (y compris commentaires, `/*!40101 ... */`, `DELIMITER`, hex, `_binary`, échappements, unicode).
-- Mémoire max < 50 Mo (mesurer avec `/usr/bin/time -v`).
-
-> Si ce test ne passe pas, rien d'autre n'a de sens. C'est le premier à écrire.
-
----
-
-## T02 — Transformation de base
-
-**Entrée** : `dumps/01_basic.sql` + `configs/01_basic.yaml`
-**Commande** : `dbclone transform -c configs/01_basic.yaml < dumps/01_basic.sql > out.sql`
-**Assertions sur `out.sql`** :
-
-| # | Vérification | Comment |
-|---|---|---|
-| 1 | Aucune vraie valeur ne subsiste | `grep -c` de chacune des valeurs sensibles d'origine = 0 : `jean.dupont@gmail.com`, `O'Connor`, `0612345678`, `+33 7 98 76 54 32`, `1985-03-14`, `tok_a1b2c3d4e5f6`, `12 rue de la Paix`, `FR7630006000011234567890189`, `GB29NWBK60161331926819`, `AGRIFRPP`, `82.64.12.201`, `appeler M. Dupont` |
-| 2 | Le nombre de lignes par table est conservé | `user` : 5, `address` : 3, `order` : 4, `bank_account` : 2, `product` : 2 |
-| 3 | `audit_log` est vide | `CREATE TABLE \`audit_log\`` présent, aucun `INSERT INTO \`audit_log\`` |
-| 4 | Les colonnes `keep` sont intactes | `149.90`, `ORD-2024-0001`, `'FR'`, `'GB'`, `Clavier mécanique`, `0x89504E470D0A1A0A` présents tels quels |
-| 5 | Cohérence email inter-tables | l'email de `user.id=1` == `order.customer_email` des orders 1 et 2 (même valeur transformée) |
-| 6 | Cohérence email intra-table | `user.id=1` et `user.id=5` (même email d'origine) ont le même email transformé |
-| 7 | Format email préservé | toutes les valeurs `email` matchent `^[a-z0-9._-]+@example\.(org|net|com)$` |
-| 8 | Format IBAN préservé | 2 IBAN, pays conservés (`FR`, `GB`), clé mod 97 valide, longueur correcte par pays (27 / 22) |
-| 9 | Format téléphone fr préservé | `user.id=1,4` → 10 chiffres commençant par `06` ou `07` ; `user.id=2` (entrée E.164 `+33 …`) → sortie E.164 `+33 …` |
-| 10 | NULL reste NULL | `user.id=3` : `phone` et `birth_date` sont `NULL` ; `address.id=2` : `line2` est `NULL` |
-| 11 | `null` explicite | toutes les valeurs de `user.api_token`, `user.nickname`, `order.notes` sont `NULL` (`order.id=3` avait `''` → devient `NULL` car colonne nullable) |
-| 12 | `constant` | les 5 `password` == `$2y$13$DEVONLY…` |
-| 13 | `date_shift` | `birth_date` de `user.id=1` ≠ `1985-03-14`, mais dans `[1984-03-14, 1986-03-14]` |
-| 14 | Longueur respectée | aucune valeur `email` > 180, `phone` > 20, `postcode` > 10 |
-| 15 | `postcode keep_department` | `75002` → commence par `75` ; `69003` → `69` ; `SW1A 2AA` (GB) → format GB plausible, pas un code français |
-| 16 | Le dump s'importe | `mysql < out.sql` sans erreur sur MySQL 8 (test d'intégration, CI Docker) |
-| 17 | Rapport | stdout/`.dbclone/last-report.json` : `unclassified == 0`, `tables_skipped == ["audit_log"]`, `rows_processed == 16` |
-
----
-
-## T03 — Refus si config incomplète (sûr par défaut)
-
-**Entrée** : `dumps/01_basic.sql` + `configs/02_incomplete.yaml`
-**Commandes** :
-- `dbclone check -c configs/02_incomplete.yaml --from dumps/01_basic.sql`
-- `dbclone transform -c configs/02_incomplete.yaml < dumps/01_basic.sql > out.sql`
-
-**Assertions** :
-- Code retour ≠ 0 pour les deux.
-- `out.sql` est **vide** (0 octet). L'outil ne doit pas avoir commencé à écrire.
-- stderr liste exactement les colonnes manquantes : `user.phone`, `user.password`, `user.api_token`, `user.birth_date`, `address.line1`, `address.line2`, `address.city`, `address.postcode`, `order.customer_email`, `bank_account.iban`, `bank_account.bic`, `bank_account.holder_name`, `audit_log.ip_address`, et les entrées `review` : `user.nickname`, `order.notes`, `audit_log.payload`, `product.name`.
-- stderr ne contient **aucune valeur de données** (grep `gmail`, `Dupont`, `FR76` = 0).
-
----
-
-## T04 — Déterminisme en mode pseudonymize
-
-**Entrée** : `dumps/01_basic.sql` + `configs/03_pseudonymize.yaml`
-**Commandes** :
 ```
-DBCLONE_KEY=test-key-do-not-use-in-prod dbclone transform -c configs/03_pseudonymize.yaml < dumps/01_basic.sql > run1.sql
-DBCLONE_KEY=test-key-do-not-use-in-prod dbclone transform -c configs/03_pseudonymize.yaml < dumps/01_basic.sql > run2.sql
-DBCLONE_KEY=another-key                 dbclone transform -c configs/03_pseudonymize.yaml < dumps/01_basic.sql > run3.sql
+mysqldump ma_base | sosie transform --config sosie.yaml > dump_clean.sql
+mysql ma_base_dev < dump_clean.sql
 ```
-**Assertions** :
-- `cmp run1.sql run2.sql` → identique.
-- `cmp run1.sql run3.sql` → différent (au moins les emails).
-- Sans `DBCLONE_KEY` → code retour ≠ 0, message clair.
-- Un avertissement "sortie pseudonymisée = donnée personnelle" est affiché sur stderr.
-- `run1.sql` est le golden file de référence à snapshotter avec `insta`.
 
-## T04b — Non-déterminisme en mode anonymize
+## Pourquoi
 
-Deux exécutions de T02 produisent des sorties **différentes** (clé aléatoire), mais chacune passe toutes les assertions de T02.
+Un dump brut de prod sur un laptop de développeur, c'est une fuite de données personnelles qui s'ignore. Les alternatives habituelles sont mauvaises : des fixtures ne ressemblent jamais à la vraie prod, un script SQL maison est lent et vite obsolète, et refaire les mêmes requêtes anonymisées à la main à chaque fois n'est pas tenable. Sosie automatise ça avec un principe simple : **par défaut, l'outil refuse de tourner si une colonne qui ressemble à une donnée personnelle n'a pas de règle explicite.**
 
----
+## État actuel
 
-## T05 — Cas limites du parseur avec transformation
+Le cœur du projet est implémenté et testé :
 
-**Entrée** : `dumps/02_parser_edge_cases.sql` + `configs/02_parser_edge_cases.yaml`
-**Assertions** :
-- Seules les valeurs des colonnes `email` diffèrent entre entrée et sortie. Test : remplacer par un placeholder toutes les valeurs de position `email` dans les deux fichiers, puis `cmp`.
-- La chaîne `'INSERT INTO \`user\` VALUES (1,''x''); -- pas une vraie requête'` ressort intacte (pas interprétée comme une requête).
-- `email_domain` (GENERATED) n'est ni exigée par `check` ni "transformée".
-- La vue `v_emails` et le trigger ressortent tels quels ; le rapport contient un avertissement `raw_objects: ["VIEW v_emails", "TRIGGER trg_order"]`.
-- `empty_table` : 1 ligne, l'email unicode est transformé, le reste de la ligne intact.
-- Hex `0xDEADBEEF` et `_binary '\0…'` intacts.
+- parseur/writer `mysqldump` en streaming, round-trip byte-à-byte vérifié ;
+- 13 presets de transformation déterministes (email, noms, téléphone, IBAN, BIC, adresse, date, IP, hash...) ;
+- moteur de transformation piloté par une config YAML, avec garde-fou de sécurité ;
+- détection automatique des colonnes sensibles par nom et par contenu, pour générer et vérifier la config (`init` / `check`) ;
+- rapport de fin d'exécution (compteurs uniquement, jamais une valeur de donnée).
 
----
+Pas encore fait (finitions, non bloquantes) : sortie compressée, barre de progression, benchmark à grande échelle, binaires de release. Détails, limitations précises et référence complète : **[`docs/USAGE.md`](docs/USAGE.md)**.
 
-## T06 — Génération de config par `init`
+## Installation
 
-**Entrée** : `dumps/01_basic.sql`
-**Commande** : `dbclone init --from dumps/01_basic.sql -o generated.yaml`
-**Assertions** :
-- `generated.yaml` est sémantiquement égal à `configs/01_basic.expected-init.yaml` (comparer les structures YAML, pas le texte : les commentaires et l'ordre peuvent différer).
-- Chaque entrée porte un commentaire indiquant le signal (`# nom`, `# nom + contenu`, …).
-- `dbclone check -c generated.yaml --from dumps/01_basic.sql` échoue (section `review` non vide) : c'est voulu, l'humain doit trancher.
+Nécessite Rust (voir `rust-toolchain.toml` pour la version exacte, installée automatiquement par `rustup`).
 
-## T06b — `init` avec Doctrine
+```bash
+git clone <ce dépôt>
+cd sosie
+cargo build --release
+./target/release/sosie --help
+```
 
-**Commande** : `dbclone init --from dumps/01_basic.sql --doctrine doctrine/ -o generated.yaml`
-**Assertions supplémentaires** :
-- `bank_account.iban: iban` et `bank_account.bic: bic` détectés via `Assert\Iban` / `Assert\Bic` (et non via le nom de propriété `accountNumber` / `swift`).
-- `user.email` porte le commentaire `# Assert\Email`.
-- `user.password: constant(...)` justifié par `PasswordAuthenticatedUserInterface`.
-- Le rapport d'init liste les relations déduites : `address.user_id → user.id`, `bank_account.user_id → user.id`.
+## Démarrage rapide
 
----
+**1. Dumper la base à anonymiser**
 
-## T07 — Sous-échantillonnage (v0.2)
+```bash
+mysqldump --single-transaction ma_base > dump.sql
+```
 
-**Entrée** : `dumps/01_basic.sql` + `configs/03_pseudonymize.yaml` + option `--sample user:60%`
-**Assertions** :
-- Le nombre de `user` gardés est déterministe pour une clé donnée (avec 5 lignes et 60 %, on attend 3 ± 1 ; le golden fixe la valeur exacte).
-- Pour chaque `user` gardé, **toutes** ses `address`, `order`, `bank_account` sont présentes ; pour chaque `user` supprimé, **aucune**.
-- `product` (référentiel, sans FK vers user) est intégralement conservé.
-- `mysql < out.sql` avec `FOREIGN_KEY_CHECKS=1` réussit.
+**2. Générer une config de départ** — Sosie analyse le schéma et un échantillon des données, et propose un `sosie.yaml` :
 
----
+```bash
+sosie init --from dump.sql --out sosie.yaml
+```
 
-## T08 — Performance (bench, pas un test bloquant)
+**3. Relire et compléter la config.** `init` couvre automatiquement ce qu'il reconnaît avec confiance (email, téléphone, IBAN...), mais laisse une section `review:` pour les cas ambigus (`notes`, `nickname`, un champ JSON contenant une clé sensible...) — c'est le seul moment où un humain doit trancher :
 
-Générer un dump synthétique de 1 Go (script `gen_big_dump.sh` à écrire : 1 table `user` × 5 M lignes) :
-- `transform` avec `01_basic.yaml` adapté : débit ≥ 100 Mo/s, mémoire max < 100 Mo, sur un laptop récent.
-- Comparer à un script Python `re.sub` équivalent pour le README (ordre de grandeur attendu : 20 à 50×).
+```yaml
+tables:
+  order:
+    notes: null       # texte libre qui contenait parfois un téléphone -> on vide
+  product:
+    name: keep          # nom de produit, pas une personne -> faux positif, on garde
+```
+
+**4. Vérifier que tout est couvert**
+
+```bash
+sosie check --from dump.sql --config sosie.yaml
+# check OK : 6 tables, aucune colonne sensible sans règle.
+```
+
+**5. Transformer**
+
+```bash
+sosie transform --from dump.sql --config sosie.yaml --out dump_clean.sql
+```
+
+`dump_clean.sql` est un dump SQL valide, importable tel quel, où les données personnelles ont été remplacées par des valeurs fictives cohérentes (même structure, même format, contraintes `NOT NULL` respectées).
+
+**6. Importer en local**
+
+```bash
+mysql ma_base_dev < dump_clean.sql
+```
+
+Le détail de chaque commande, le cas d'usage complet et la liste des presets sont dans `docs/USAGE.md`. Les valeurs de règle possibles (`keep`/`null`/`constant`/preset) et le choix entre `anonymize` et `pseudonymize` sont dans `docs/CONFIGURATION.md`.
+
+## Développement
+
+```bash
+cargo test           # suite de tests
+cargo fmt --check    # formatage
+cargo clippy --all-targets -- -D warnings
+```
+
+Ces trois commandes sont celles de la CI (`.gitlab-ci.yml`).
+
+- [`docs/USAGE.md`](docs/USAGE.md) — référence d'utilisation complète (commandes, cas d'usage, presets, limitations).
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — détail technique de `sosie.yaml` : valeurs de règle possibles, `anonymize` vs `pseudonymize`.
+- [`docs/PLAN.md`](docs/PLAN.md) — plan de construction, étape par étape.
+- [`docs/CAHIER_DES_CHARGES.md`](docs/CAHIER_DES_CHARGES.md) — vision cible et fonctionnalités futures.

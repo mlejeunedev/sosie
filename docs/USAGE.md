@@ -172,8 +172,9 @@ review: []              # informatif, rempli par `init` ; `check` ne s'y fie pas
 Points importants :
 
 - Jamais de secret dans ce fichier (`dsn`, `password`, `key` à la racine ou sous `source` sont refusés au chargement) — une colonne de schéma nommée `password` reste bien sûr autorisée.
-- `mode: pseudonymize` exige la variable d'environnement `SOSIE_KEY` (≥ 16 caractères) ; en `anonymize`, la clé est générée aléatoirement à chaque exécution et n'est jamais affichée ni conservée.
 - Un preset inconnu dans la config fait échouer le chargement, avec une suggestion si le nom ressemble à un preset existant (faute de frappe).
+
+Pour le détail des 4 valeurs de règle possibles (`keep`/`null`/`constant`/preset) et la différence entre `mode: anonymize` et `mode: pseudonymize` : **[`docs/CONFIGURATION.md`](CONFIGURATION.md)**.
 
 ## Les presets disponibles
 
