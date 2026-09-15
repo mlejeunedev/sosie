@@ -21,9 +21,10 @@ Le cœur du projet est implémenté et testé :
 - 13 presets de transformation déterministes (email, noms, téléphone, IBAN, BIC, adresse, date, IP, hash...) ;
 - moteur de transformation piloté par une config YAML, avec garde-fou de sécurité ;
 - détection automatique des colonnes sensibles par nom et par contenu, pour générer et vérifier la config (`init` / `check`) ;
-- rapport de fin d'exécution (compteurs uniquement, jamais une valeur de donnée).
+- rapport de fin d'exécution (compteurs uniquement, jamais une valeur de donnée) ;
+- barre de progression sur stderr (pourcentage, débit, ETA, table courante), masquée hors terminal.
 
-Pas encore fait (finitions, non bloquantes) : sortie compressée, barre de progression, benchmark à grande échelle, binaires de release. Détails, limitations précises et référence complète : **[`docs/USAGE.md`](docs/USAGE.md)**.
+Pas encore fait (finitions, non bloquantes) : sortie compressée, benchmark à grande échelle, binaires de release. Détails, limitations précises et référence complète : **[`docs/USAGE.md`](docs/USAGE.md)**.
 
 ## Installation
 

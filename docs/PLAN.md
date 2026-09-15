@@ -171,7 +171,7 @@ Fichier : `src/scan.rs`
 
 - [ ] Sortie `.sql.zst` (`zstd` crate, encoder en flux) et `.sql.gz`.
 - [ ] `--dry-run` : tout sauf l'écriture.
-- [ ] Barre de progression (`indicatif`) si stdin est un fichier de taille connue.
+- [x] Barre de progression (`indicatif`) si stdin est un fichier de taille connue.
 - [ ] Messages d'erreur : toujours `table.colonne` + numéro d'instruction, jamais de contenu.
 - [ ] README : le chrono des 10 minutes, un GIF, le tableau des presets, "ce que Sosie garantit / ne garantit pas".
 - [ ] Bench : dump synthétique 1 Go, mesurer débit et mémoire, mettre les chiffres dans le README.

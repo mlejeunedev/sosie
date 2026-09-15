@@ -24,6 +24,23 @@ enum ScanState {
     DoubleQuoted,
 }
 
+/// Curseur de scan reprenable : où en est [`find_statement_end`] dans le
+/// buffer, pour ne jamais rescanner les octets déjà vus quand une instruction
+/// arrive en plusieurs lectures (sans lui, une instruction de 1 Mio lue par
+/// blocs de 64 Kio serait parcourue ~136 fois au lieu d'une).
+#[derive(Clone, Copy)]
+struct ScanCursor {
+    state: ScanState,
+    pos: usize,
+}
+
+impl ScanCursor {
+    const START: ScanCursor = ScanCursor {
+        state: ScanState::Normal,
+        pos: 0,
+    };
+}
+
 /// Cherche la fin de la prochaine instruction SQL dans `buf` (à partir de l'indice 0).
 ///
 /// Une instruction se termine par un `;` immédiatement suivi d'une fin de ligne
@@ -36,8 +53,11 @@ enum ScanState {
 /// instructions consécutives se recollent sans rien ajouter ni perdre. `eof`
 /// indique qu'aucun octet supplémentaire ne viendra : la fin du buffer compte
 /// alors aussi comme fin d'instruction (dernière ligne sans retour à la ligne).
-/// `None` signifie qu'il faut lire plus de données pour trancher.
-fn find_statement_end(buf: &[u8], eof: bool) -> Option<usize> {
+/// `None` signifie qu'il faut lire plus de données pour trancher ; `cursor`
+/// mémorise alors l'avancement, et l'appel suivant (même `buf`, allongé)
+/// reprend là où celui-ci s'est arrêté. Il doit valoir [`ScanCursor::START`]
+/// au premier appel sur une nouvelle instruction.
+fn find_statement_end(buf: &[u8], eof: bool, cursor: &mut ScanCursor) -> Option<usize> {
     // Cas particulier : une instruction qui commence (après d'éventuelles
     // lignes blanches — `mysqldump` sépare ses sections ainsi) par un
     // commentaire de fin de ligne (`-- …`). `mysqldump` en met toujours un
@@ -47,29 +67,46 @@ fn find_statement_end(buf: &[u8], eof: bool) -> Option<usize> {
     // reconnue comme `CREATE TABLE` / `INSERT INTO`. Byte pour byte ça ne
     // changerait rien (un `Raw` fusionné se réécrit à l'identique), mais on
     // perdrait la structuration.
-    let after_blank_lines = {
-        let mut i = 0;
-        while buf.get(i) == Some(&b'\n') {
-            i += 1;
-        }
-        i
-    };
-    if buf[after_blank_lines..].starts_with(b"--") {
-        return match buf[after_blank_lines..].iter().position(|&b| b == b'\n') {
-            Some(nl) => Some(after_blank_lines + nl + 1),
-            None if eof => Some(buf.len()),
-            None => None,
+    if cursor.pos == 0 {
+        let after_blank_lines = {
+            let mut i = 0;
+            while buf.get(i) == Some(&b'\n') {
+                i += 1;
+            }
+            i
         };
+        if !eof && buf.len() < after_blank_lines + 2 {
+            // Pas encore de quoi savoir si ça commence par `--`.
+            return None;
+        }
+        if buf[after_blank_lines..].starts_with(b"--") {
+            return match buf[after_blank_lines..].iter().position(|&b| b == b'\n') {
+                Some(nl) => Some(after_blank_lines + nl + 1),
+                None if eof => Some(buf.len()),
+                None => None,
+            };
+        }
     }
 
-    let mut state = ScanState::Normal;
-    let mut i = 0;
+    let mut state = cursor.state;
+    let mut i = cursor.pos;
     while i < buf.len() {
+        // Le scan regarde un octet en avant (`--`, `/*`, `*/`, `''`, `\'`,
+        // `;\n`) : tant que le flux n'est pas fini, on s'arrête avant
+        // d'entamer un octet dont le suivant n'est pas encore lu. Seul `;\r`
+        // a besoin d'en voir deux (cf. ci-dessous).
+        if !eof && i + 1 >= buf.len() {
+            break;
+        }
         let b = buf[i];
         match state {
             ScanState::Normal => match b {
                 b';' if is_line_end(buf, i + 1) || (eof && i + 1 == buf.len()) => {
                     return Some(line_end_len(buf, i + 1) + i + 1);
+                }
+                b';' if !eof && buf.get(i + 1) == Some(&b'\r') && i + 2 >= buf.len() => {
+                    // `;\r` en fin de buffer : `\n` peut suivre, on attend.
+                    break;
                 }
                 b'\'' => state = ScanState::SingleQuoted,
                 b'"' => state = ScanState::DoubleQuoted,
@@ -119,6 +156,7 @@ fn find_statement_end(buf: &[u8], eof: bool) -> Option<usize> {
         }
         i += 1;
     }
+    *cursor = ScanCursor { state, pos: i };
     None
 }
 
@@ -624,7 +662,13 @@ fn escape_sql_string(bytes: &[u8], out: &mut Vec<u8>) {
 // ---------------------------------------------------------------------------
 
 struct PendingInsert {
+    /// Position du premier `(` de la liste `VALUES` dans l'instruction.
+    values_start: usize,
+    /// Bornes des tuples, calculées paresseusement à la première `Row` :
+    /// une table skippée par l'appelant (cf. [`DumpParser::skip_rows`]) n'est
+    /// ainsi jamais scannée au-delà de son préfixe.
     tuples: Vec<(usize, usize)>,
+    scanned: bool,
     next: usize,
 }
 
@@ -637,6 +681,8 @@ pub struct MysqlParser<R> {
     start: usize,
     /// `true` une fois que `reader` a renvoyé 0 octet.
     eof: bool,
+    /// Avancement du scan de fin d'instruction sur `buf[..]`, entre deux lectures.
+    cursor: ScanCursor,
     /// `Some` tant qu'on égrène les `Row` d'un `INSERT` en cours.
     pending_insert: Option<PendingInsert>,
 }
@@ -648,6 +694,7 @@ impl<R: Read> MysqlParser<R> {
             buf: Vec::new(),
             start: 0,
             eof: false,
+            cursor: ScanCursor::START,
             pending_insert: None,
         }
     }
@@ -659,9 +706,10 @@ impl<R: Read> MysqlParser<R> {
             if self.start > 0 {
                 self.buf.drain(0..self.start);
                 self.start = 0;
+                self.cursor = ScanCursor::START;
             }
 
-            if let Some(end) = find_statement_end(&self.buf, self.eof) {
+            if let Some(end) = find_statement_end(&self.buf, self.eof, &mut self.cursor) {
                 self.start = end;
                 return Ok(Some(&self.buf[..end]));
             }
@@ -691,6 +739,12 @@ impl<R: Read> MysqlParser<R> {
             .pending_insert
             .as_mut()
             .expect("pending_insert is Some");
+        if !pending.scanned {
+            // L'instruction courante est `buf[..start]` (pas encore drainée :
+            // `next_statement` ne l'est qu'une fois `pending_insert` vidé).
+            pending.tuples = find_value_tuples(&self.buf[..self.start], pending.values_start)?;
+            pending.scanned = true;
+        }
         if pending.next < pending.tuples.len() {
             let (s, e) = pending.tuples[pending.next];
             pending.next += 1;
@@ -713,11 +767,14 @@ enum Decision {
         table: String,
         columns: Option<Vec<String>>,
         prefix_end: usize,
-        tuples: Vec<(usize, usize)>,
     },
 }
 
 impl<R: Read> DumpParser for MysqlParser<R> {
+    fn skip_rows(&mut self) {
+        self.pending_insert = None;
+    }
+
     fn next_event(&mut self) -> Result<Option<Event<'_>>> {
         if self.pending_insert.is_some() {
             return self.next_row_event();
@@ -741,15 +798,10 @@ impl<R: Read> DumpParser for MysqlParser<R> {
                 Decision::Table(parse_create_table(body)?)
             } else if starts_with_ci(body, b"INSERT INTO") {
                 let head = parse_insert_head(body)?;
-                let tuples = find_value_tuples(body, head.prefix_end)?;
                 Decision::Insert {
                     table: head.table,
                     columns: head.columns,
                     prefix_end: leading + head.prefix_end,
-                    tuples: tuples
-                        .into_iter()
-                        .map(|(s, e)| (leading + s, leading + e))
-                        .collect(),
                 }
             } else {
                 Decision::Raw
@@ -764,9 +816,13 @@ impl<R: Read> DumpParser for MysqlParser<R> {
                 table,
                 columns,
                 prefix_end,
-                tuples,
             } => {
-                self.pending_insert = Some(PendingInsert { tuples, next: 0 });
+                self.pending_insert = Some(PendingInsert {
+                    values_start: prefix_end,
+                    tuples: Vec::new(),
+                    scanned: false,
+                    next: 0,
+                });
                 Ok(Some(Event::RowsBegin {
                     table,
                     columns,
@@ -843,7 +899,80 @@ mod tests {
     use super::*;
 
     fn ends(input: &str, eof: bool) -> Option<usize> {
-        find_statement_end(input.as_bytes(), eof)
+        let mut cursor = ScanCursor::START;
+        find_statement_end(input.as_bytes(), eof, &mut cursor)
+    }
+
+    /// Lecteur qui ne rend jamais plus de `n` octets par appel, pour forcer
+    /// une instruction à arriver en beaucoup de morceaux.
+    struct Dribble<'a> {
+        data: &'a [u8],
+        n: usize,
+    }
+
+    impl Read for Dribble<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.n.min(buf.len()).min(self.data.len());
+            buf[..n].copy_from_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            Ok(n)
+        }
+    }
+
+    fn roundtrip_dribble(bytes: &[u8], n: usize) -> Vec<u8> {
+        let mut parser = MysqlParser::new(Dribble { data: bytes, n });
+        let mut out = Vec::new();
+        let mut writer = MysqlWriter::new(&mut out);
+        while let Some(event) = parser.next_event().unwrap() {
+            writer.write_event(&event).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn resumable_scan_splits_statements_identically_whatever_the_read_size() {
+        // Le scan de fin d'instruction reprend là où il s'était arrêté entre
+        // deux lectures : toute frontière de lecture (au milieu d'un `;\r\n`,
+        // d'un `\'`, d'un `--`, d'un `''`…) doit donner le même découpage.
+        for fixture in [
+            &include_bytes!("../../fixtures/exemples/dumps/01_basic.sql")[..],
+            &include_bytes!("../../fixtures/exemples/dumps/02_parser_edge_cases.sql")[..],
+        ] {
+            let reference = roundtrip(fixture);
+            for n in [1, 2, 3, 7, 64, 1000] {
+                assert_eq!(
+                    roundtrip_dribble(fixture, n),
+                    reference,
+                    "lecture par {n} octets"
+                );
+                assert_eq!(
+                    collect_events_from(Dribble { data: fixture, n }),
+                    collect_events(fixture),
+                    "événements, lecture par {n} octets"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn skip_rows_jumps_to_the_next_statement_without_parsing_tuples() {
+        let input: &[u8] = include_bytes!("../../fixtures/exemples/dumps/01_basic.sql");
+        let mut parser = MysqlParser::new(input);
+        let mut seen = Vec::new();
+        while let Some(event) = parser.next_event().unwrap() {
+            match event {
+                Event::RowsBegin { table, .. } => {
+                    seen.push(format!("begin {table}"));
+                    parser.skip_rows();
+                }
+                Event::Row(_) => panic!("aucune Row ne doit être émise après skip_rows"),
+                Event::RowsEnd => panic!("aucun RowsEnd ne doit être émis après skip_rows"),
+                Event::TableSchema(t) => seen.push(format!("schema {}", t.name)),
+                Event::Raw(_) => {}
+            }
+        }
+        assert!(seen.contains(&"begin user".to_string()));
+        assert!(seen.iter().filter(|s| s.starts_with("begin ")).count() >= 2);
     }
 
     #[test]
@@ -902,7 +1031,11 @@ mod tests {
     }
 
     fn collect_events(bytes: &[u8]) -> Vec<String> {
-        let mut parser = MysqlParser::new(bytes);
+        collect_events_from(bytes)
+    }
+
+    fn collect_events_from<R: Read>(reader: R) -> Vec<String> {
+        let mut parser = MysqlParser::new(reader);
         let mut out = Vec::new();
         while let Some(event) = parser.next_event().unwrap() {
             out.push(match event {

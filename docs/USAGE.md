@@ -13,7 +13,7 @@ Les étapes 0 à 6 du `PLAN.md` sont faites et fonctionnelles de bout en bout :
 - **Rapport** (`src/report`) : compteurs de fin d'exécution (jamais de valeur de donnée).
 - **Détection** (`src/scan`) : classification des colonnes par nom + par contenu, pour `init` et `check`.
 
-**Pas encore fait** (étape 7 du plan) : sortie compressée (`.zst`/`.gz`), barre de progression, mode `--dry-run` réellement testé à grande échelle, benchmark 1 Go, packaging/release binaires. Rien de tout ça n'empêche d'utiliser l'outil aujourd'hui.
+**Pas encore fait** (étape 7 du plan) : sortie compressée (`.zst`/`.gz`), mode `--dry-run` réellement testé à grande échelle, benchmark 1 Go, packaging/release binaires. Rien de tout ça n'empêche d'utiliser l'outil aujourd'hui.
 
 ## Compiler et lancer
 
@@ -69,7 +69,9 @@ Options :
 
 Garde-fou intégré : si une colonne n'a pas de règle dans la config **et** que son nom correspond à un motif sensible (email, password, iban, phone...), `transform` refuse de démarrer — sans avoir besoin d'avoir lancé `check` avant. C'est une sécurité de dernier recours basée sur le nom seul (pas le contenu, qui nécessiterait de rejouer tout le dump).
 
-À la fin : un résumé sur le terminal (lignes/colonnes traitées par table) et un rapport détaillé écrit dans `.sosie/last-report.json` — uniquement des compteurs, jamais une valeur réelle.
+Pendant l'exécution : une barre de progression sur stderr (pourcentage, débit, ETA, table courante et lignes traitées) si `--from` est un fichier, un spinner avec les octets lus si l'entrée vient de stdin. Elle est masquée automatiquement quand stderr n'est pas un terminal (CI, redirection).
+
+À la fin : un résumé sur le terminal (lignes/colonnes traitées par table) et un rapport détaillé écrit dans `.sosie/last-report.json` — uniquement des compteurs, jamais une valeur réelle. Quand le dump part sur stdout (pas de `--out`), le résumé est envoyé sur stderr pour ne jamais se mélanger au SQL.
 
 ### `sosie presets` — lister les presets disponibles
 
@@ -202,3 +204,17 @@ Rules hors preset : `keep` (copie explicite), `null` (force `NULL`, ou chaîne v
 - Pas de sortie compressée : le fichier de sortie est du SQL brut, à compresser soi-même si besoin (`sosie transform ... | zstd -o out.sql.zst`).
 - Une valeur échappée en SQL avec des apostrophes doublées (`''`, rarissime — `mysqldump` utilise toujours `\'`) est comprise correctement mais toujours ré-écrite au format `mysqldump` standard (`\'`) : le round-trip est donc identique en contenu, pas forcément octet pour octet sur ce cas précis.
 - Pas de mapping Doctrine/Symfony (prévu au-delà de la v0.1).
+
+## Tester à grande échelle
+
+Un générateur de dump synthétique est fourni en exemple Cargo. Il produit un dump `mysqldump` réaliste (schéma classicmodels + table `user`, données variées, clés étrangères cohérentes, emails uniques), déterministe pour une graine donnée, à environ 200 Mo/s :
+
+```
+cargo run --release --example gen_dump -- --size 1G --out fixtures/big/big.sql
+sosie check --from fixtures/big/big.sql --config sosie.yaml
+sosie transform --from fixtures/big/big.sql --config sosie.yaml --out fixtures/big/big.anon.sql
+```
+
+`fixtures/big/` est ignoré par git. Options : `--size` (`500M`, `1G`, `4G`…), `--seed` (même graine = même dump).
+
+Il n'y a pas de limite de taille : le dump est traité en streaming, une instruction à la fois, avec quelques Mo de mémoire de base. Le seul coût qui grandit avec les données est l'état de déduplication des colonnes `UNIQUE`/`PRIMARY KEY` transformées par un preset (ex. `user.email`) : environ 150 octets par valeur distincte, soit ~1,5 Go pour 10 millions d'emails uniques. Les tables dans `skip_tables`/`truncate_tables` sont sautées sans parser leurs lignes. Ordre de grandeur mesuré : 1 Go et 17 millions de lignes en 40 s sur un portable.
