@@ -392,7 +392,33 @@ fn parse_column_def(def: &[u8]) -> Result<Column> {
         nullable,
         max_len,
         generated,
+        unique: false, // renseigné après coup par `parse_create_table`, une fois les clés lues.
     })
+}
+
+/// Si `def` est une contrainte `PRIMARY KEY (...)` ou `UNIQUE [KEY|INDEX]
+/// [\`nom\`] (...)` portant sur une seule colonne, retourne le nom de cette
+/// colonne. Les clés composites (plusieurs colonnes) ne rendent aucune
+/// colonne unique à elle seule : elles sont ignorées.
+fn single_column_unique_constraint(def: &[u8]) -> Option<String> {
+    let is_primary = starts_with_ci(def, b"PRIMARY KEY");
+    let is_unique = starts_with_ci(def, b"UNIQUE");
+    if !is_primary && !is_unique {
+        return None;
+    }
+    let open = def.iter().position(|&b| b == b'(')?;
+    let close = find_matching_paren(def, open).ok()?;
+    let inner = &def[open + 1..close];
+    let cols = split_top_level_commas(inner);
+    if cols.len() != 1 {
+        return None;
+    }
+    let (s, e) = cols[0];
+    let segment = &inner[s..e];
+    if segment.first() != Some(&b'`') {
+        return None;
+    }
+    parse_backtick_ident(segment, 0).ok().map(|(name, _)| name)
 }
 
 fn contains_word_ci(haystack: &[u8], needle: &[u8]) -> bool {
@@ -434,8 +460,12 @@ fn parse_create_table(stmt: &[u8]) -> Result<Table> {
             columns.push(parse_column_def(def)?);
         } else if contains_word_ci(def, b"FOREIGN KEY") {
             foreign_keys.push(String::from_utf8_lossy(def).into_owned());
+        } else if let Some(col_name) = single_column_unique_constraint(def) {
+            if let Some(col) = columns.iter_mut().find(|c| c.name == col_name) {
+                col.unique = true;
+            }
         }
-        // PRIMARY KEY / KEY / UNIQUE KEY / CONSTRAINT (CHECK) / FULLTEXT : ignorés.
+        // KEY / CONSTRAINT (CHECK) / FULLTEXT / clés composites : ignorés.
     }
 
     Ok(Table {
@@ -930,6 +960,32 @@ mod tests {
         let input: &[u8] = include_bytes!("../../fixtures/exemples/dumps/01_basic.sql");
         let events = collect_events(input);
         assert!(events.iter().any(|e| e == "TableSchema(user, 11 cols)"));
+    }
+
+    #[test]
+    fn detects_single_column_unique_and_primary_key_constraints() {
+        let input: &[u8] = include_bytes!("../../fixtures/exemples/dumps/01_basic.sql");
+        let mut parser = MysqlParser::new(input);
+        let mut user_table = None;
+        while let Some(event) = parser.next_event().unwrap() {
+            if let Event::TableSchema(t) = event {
+                if t.name == "user" {
+                    user_table = Some(t);
+                    break;
+                }
+            }
+        }
+        let user = user_table.expect("table user introuvable");
+        let unique_cols: Vec<&str> = user
+            .columns
+            .iter()
+            .filter(|c| c.unique)
+            .map(|c| c.name.as_str())
+            .collect();
+        // `id` (PRIMARY KEY) et `email` (UNIQUE KEY) sont mono-colonnes.
+        assert!(unique_cols.contains(&"id"));
+        assert!(unique_cols.contains(&"email"));
+        assert!(!unique_cols.contains(&"first_name"));
     }
 
     #[test]

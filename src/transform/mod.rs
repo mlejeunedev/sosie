@@ -1,7 +1,7 @@
 //! Moteur de transformation : applique la config à un flux d'événements.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
 use anyhow::{Context, Result, bail};
@@ -26,6 +26,15 @@ struct TablePlan {
     schema_order: Vec<String>,
     column_action: HashMap<String, Action>,
     max_len: HashMap<String, Option<u32>>,
+    /// Colonnes couvertes par une contrainte `PRIMARY KEY`/`UNIQUE KEY` mono-colonne :
+    /// leurs valeurs générées par preset ne doivent jamais entrer en collision.
+    unique_columns: HashSet<String>,
+    /// Par colonne unique : valeur d'origine -> valeur déjà attribuée (pour
+    /// qu'une même entrée redonne toujours la même sortie, cf. `dedup_by_input`).
+    dedup_by_input: HashMap<String, HashMap<Vec<u8>, Vec<u8>>>,
+    /// Par colonne unique : ensemble des sorties déjà attribuées, pour
+    /// détecter une collision entre deux entrées différentes.
+    used_outputs: HashMap<String, HashSet<Vec<u8>>>,
 }
 
 /// Dérive la clé HMAC à utiliser pour toute la transformation.
@@ -50,9 +59,13 @@ fn build_table_plan(config: &Config, table: &DumpTable) -> Result<TablePlan> {
 
     let mut column_action = HashMap::new();
     let mut max_len = HashMap::new();
+    let mut unique_columns = HashSet::new();
 
     for col in &table.columns {
         max_len.insert(col.name.clone(), col.max_len);
+        if col.unique {
+            unique_columns.insert(col.name.clone());
+        }
         let rule = rules.and_then(|m| m.get(&col.name));
         let action = match rule {
             Some(Rule::Keep) => Action::Keep,
@@ -101,6 +114,9 @@ fn build_table_plan(config: &Config, table: &DumpTable) -> Result<TablePlan> {
         schema_order: table.columns.iter().map(|c| c.name.clone()).collect(),
         column_action,
         max_len,
+        unique_columns,
+        dedup_by_input: HashMap::new(),
+        used_outputs: HashMap::new(),
     })
 }
 
@@ -118,11 +134,84 @@ fn truncate_to_chars(
     }
 }
 
+/// Nombre de secondes tentatives avant d'abandonner et de renvoyer quand même
+/// une valeur (ne devrait jamais être atteint en pratique : à ce stade
+/// l'espace de sortie du preset serait de toute façon proche de la saturation).
+const MAX_DEDUP_ATTEMPTS: u32 = 1000;
+
+/// Calcule la sortie d'un preset pour une colonne `UNIQUE`, en garantissant
+/// qu'elle ne collisionne jamais avec une sortie déjà attribuée à une AUTRE
+/// valeur d'origine dans cette même colonne :
+/// - même entrée déjà vue -> on renvoie exactement la même sortie qu'avant
+///   (préserve la cohérence habituelle, ex. deux lignes avec le même email) ;
+/// - entrée nouvelle -> on calcule normalement, et seulement en cas de
+///   collision réelle avec une autre entrée on retire une variante (graine
+///   perturbée par un numéro de tentative) jusqu'à en trouver une libre.
+#[allow(clippy::too_many_arguments)]
+fn resolve_unique_preset_value(
+    preset: &dyn Preset,
+    preset_name: &str,
+    raw: &[u8],
+    key: &[u8],
+    max_len: Option<u32>,
+    dedup_map: &mut HashMap<Vec<u8>, Vec<u8>>,
+    used_outputs: &mut HashSet<Vec<u8>>,
+    report: &mut crate::report::ColumnReport,
+) -> Vec<u8> {
+    if let Some(existing) = dedup_map.get(raw) {
+        return existing.clone();
+    }
+
+    let mut candidate = Vec::new();
+    for attempt in 0..=MAX_DEDUP_ATTEMPTS {
+        let seed_name = if attempt == 0 {
+            Cow::Borrowed(preset_name)
+        } else {
+            Cow::Owned(format!("{preset_name}#{attempt}"))
+        };
+        let seed = presets::seed_for(key, &seed_name, raw);
+        let out = preset.apply(
+            &Value::Str(Cow::Borrowed(raw)),
+            &seed,
+            &ColumnCtx { max_len },
+        );
+        let mut bytes = match out {
+            Value::Str(s) => s.into_owned(),
+            other => {
+                // Un preset appliqué à un `Str` doit renvoyer un `Str` ; s'il
+                // ne le fait pas, on n'a rien à dédupliquer.
+                dedup_map.insert(raw.to_vec(), Vec::new());
+                return match other {
+                    Value::Raw(b) => b.to_vec(),
+                    _ => Vec::new(),
+                };
+            }
+        };
+        if let Some(max) = max_len {
+            bytes = truncate_to_chars(&bytes, max as usize, report);
+        }
+        if used_outputs.insert(bytes.clone()) {
+            candidate = bytes;
+            break;
+        }
+        candidate = bytes;
+    }
+
+    dedup_map.insert(raw.to_vec(), candidate.clone());
+    candidate
+}
+
+/// État de déduplication d'une colonne `UNIQUE` : (entrée -> sortie déjà
+/// attribuée, ensemble des sorties déjà attribuées).
+type UniqueDedupState<'a> = (&'a mut HashMap<Vec<u8>, Vec<u8>>, &'a mut HashSet<Vec<u8>>);
+
+#[allow(clippy::too_many_arguments)]
 fn apply_action<'a>(
     action: &Action,
     value: Value<'a>,
     key: &[u8],
     max_len: Option<u32>,
+    unique: Option<UniqueDedupState<'_>>,
     report: &mut crate::report::ColumnReport,
 ) -> Value<'a> {
     match action {
@@ -158,15 +247,29 @@ fn apply_action<'a>(
                 value
             }
             Value::Str(s) => {
-                let seed = presets::seed_for(key, name, s);
-                let ctx = ColumnCtx { max_len };
-                let out = preset.apply(&value, &seed, &ctx);
                 report.transformed += 1;
-                match (max_len, out) {
-                    (Some(max), Value::Str(cow)) => {
-                        Value::Str(Cow::Owned(truncate_to_chars(&cow, max as usize, report)))
+                if let Some((dedup_map, used_outputs)) = unique {
+                    let bytes = resolve_unique_preset_value(
+                        preset.as_ref(),
+                        name,
+                        s,
+                        key,
+                        max_len,
+                        dedup_map,
+                        used_outputs,
+                        report,
+                    );
+                    Value::Str(Cow::Owned(bytes))
+                } else {
+                    let seed = presets::seed_for(key, name, s);
+                    let ctx = ColumnCtx { max_len };
+                    let out = preset.apply(&value, &seed, &ctx);
+                    match (max_len, out) {
+                        (Some(max), Value::Str(cow)) => {
+                            Value::Str(Cow::Owned(truncate_to_chars(&cow, max as usize, report)))
+                        }
+                        (_, other) => other,
                     }
-                    (_, other) => other,
                 }
             }
         },
@@ -216,22 +319,37 @@ pub fn run<R: Read, W: Write>(
                 if skipping {
                     continue;
                 }
-                let p = plan.as_ref().expect("Row sans RowsBegin");
-                let table_name = p.table.clone();
-                let transformed: Vec<Value> = values
-                    .iter()
-                    .zip(current_order.iter())
-                    .map(|(v, col_name)| {
-                        let action = p.column_action.get(col_name).unwrap_or(&Action::Keep);
-                        let max_len = p.max_len.get(col_name).copied().flatten();
-                        let col_report = report
-                            .table_mut(&table_name)
-                            .columns
-                            .entry(col_name.clone())
-                            .or_default();
-                        apply_action(action, v.clone(), &key, max_len, col_report)
-                    })
-                    .collect();
+                let table_name = plan.as_ref().expect("Row sans RowsBegin").table.clone();
+                let mut transformed: Vec<Value> = Vec::with_capacity(values.len());
+                for (v, col_name) in values.iter().zip(current_order.iter()) {
+                    let p = plan.as_mut().expect("Row sans RowsBegin");
+                    // Emprunts disjoints d'un même `&mut TablePlan` : `column_action`
+                    // (lu) d'un côté, `dedup_by_input`/`used_outputs` (mutés) de
+                    // l'autre — deux champs distincts, le compilateur les sépare.
+                    let action = p.column_action.get(col_name).unwrap_or(&Action::Keep);
+                    let max_len = p.max_len.get(col_name).copied().flatten();
+                    let unique = if p.unique_columns.contains(col_name) {
+                        Some((
+                            p.dedup_by_input.entry(col_name.clone()).or_default(),
+                            p.used_outputs.entry(col_name.clone()).or_default(),
+                        ))
+                    } else {
+                        None
+                    };
+                    let col_report = report
+                        .table_mut(&table_name)
+                        .columns
+                        .entry(col_name.clone())
+                        .or_default();
+                    transformed.push(apply_action(
+                        action,
+                        v.clone(),
+                        &key,
+                        max_len,
+                        unique,
+                        col_report,
+                    ));
+                }
                 let tr = report.table_mut(&table_name);
                 tr.rows_in += 1;
                 tr.rows_out += 1;
@@ -359,5 +477,67 @@ tables:
         let text = String::from_utf8_lossy(&out);
         assert!(!text.contains("x@y.fr"));
         assert!(text.contains("ligne1\\nligne2\\ttab\\\\backslash \\\"quoted\\\" \\0nul"));
+    }
+
+    #[test]
+    fn dedup_with_fallback_fills_a_small_output_pool_without_collision() {
+        use rand::RngExt;
+
+        // Preset factice à espace de sortie minuscule (10 valeurs possibles),
+        // pour déclencher des collisions à coup sûr et vérifier que le repli
+        // les résout au lieu de laisser passer un doublon.
+        struct TinyPoolPreset;
+        impl Preset for TinyPoolPreset {
+            fn apply<'a>(
+                &self,
+                _input: &Value<'a>,
+                seed: &presets::Seed,
+                _ctx: &ColumnCtx,
+            ) -> Value<'a> {
+                const POOL: [&str; 10] = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+                let mut rng = seed.rng();
+                let idx = rng.random_range(0..POOL.len());
+                Value::Str(Cow::Owned(POOL[idx].as_bytes().to_vec()))
+            }
+        }
+
+        let mut dedup_map = HashMap::new();
+        let mut used = HashSet::new();
+        let mut report = crate::report::ColumnReport::default();
+        let mut outputs = HashSet::new();
+
+        for i in 0..10 {
+            let input = format!("input-{i}");
+            let out = resolve_unique_preset_value(
+                &TinyPoolPreset,
+                "tiny",
+                input.as_bytes(),
+                b"key",
+                None,
+                &mut dedup_map,
+                &mut used,
+                &mut report,
+            );
+            outputs.insert(out);
+        }
+
+        assert_eq!(
+            outputs.len(),
+            10,
+            "10 entrées distinctes doivent occuper les 10 sorties possibles du pool, sans collision"
+        );
+
+        // Une entrée déjà vue doit toujours redonner exactement la même sortie.
+        let again = resolve_unique_preset_value(
+            &TinyPoolPreset,
+            "tiny",
+            b"input-3",
+            b"key",
+            None,
+            &mut dedup_map,
+            &mut used,
+            &mut report,
+        );
+        assert_eq!(again, dedup_map[b"input-3".as_slice()]);
     }
 }
