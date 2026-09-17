@@ -1,6 +1,7 @@
 stages:
   - lint
   - test
+  - deploy
 
 variables:
   CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
@@ -29,3 +30,20 @@ test:
   stage: test
   script:
     - cargo test
+
+# Déploie docs/landing sur GitLab Pages (https://<namespace>.gitlab.io/sosie).
+# Le job doit s'appeler `pages` et publier un dossier `public/` en artefact.
+pages:
+  stage: deploy
+  image: alpine:latest
+  before_script: []
+  cache: []
+  script:
+    - rm -rf public
+    - cp -r docs/landing public
+  artifacts:
+    paths:
+      - public
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
