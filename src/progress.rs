@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use indicatif::{HumanBytes, ProgressBar, ProgressBarIter, ProgressDrawTarget, ProgressStyle};
 
+use sosie::report::group_thousands;
 use sosie::transform;
 
 const TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ";
@@ -78,7 +79,7 @@ impl Progress {
     }
 
     /// Remplace la barre par une ligne de bilan :
-    /// `✔ analyse  42.83 MiB en 0.4s · 6 tables`.
+    /// `✔ analyse  6 tables · 42.83 MiB en 0.4s`.
     ///
     /// Une analyse rapide peut se terminer avant le premier rafraîchissement
     /// de la barre ; cette ligne garantit un retour visible dans tous les cas.
@@ -89,11 +90,15 @@ impl Progress {
         } else {
             format!("{:.1}s", elapsed.as_secs_f64())
         };
-        let mut summary = format!("{} en {duration}", HumanBytes(self.bar.position()));
+        let mut summary = String::new();
         if !detail.is_empty() {
-            summary.push_str(" · ");
             summary.push_str(detail);
+            summary.push_str(" · ");
         }
+        summary.push_str(&format!(
+            "{} en {duration}",
+            HumanBytes(self.bar.position())
+        ));
         self.bar.set_style(
             ProgressStyle::with_template("{spinner:.green} {prefix:.bold}  {msg}")
                 .expect("template valide")
@@ -107,9 +112,18 @@ impl Progress {
         }
     }
 
-    /// Bilan de `transform` : lignes traitées d'après le dernier `Progress::Rows`.
-    pub fn finish_rows(&self) {
-        self.finish(&format!("{} lignes", group_thousands(self.rows)));
+    /// Bilan de `transform` : `✔ anonymize  531 840 lignes · 9 tables · 42.83 MiB en 2.2s`.
+    pub fn finish_transform(&self, rows: u64, tables: usize) {
+        self.finish(&format!(
+            "{} lignes · {tables} tables",
+            group_thousands(rows)
+        ));
+    }
+
+    /// `true` si la barre n'est pas affichée (stderr n'est pas un terminal) :
+    /// le bilan doit alors être écrit explicitement par l'appelant.
+    pub fn is_hidden(&self) -> bool {
+        self.bar.is_hidden()
     }
 }
 
@@ -120,31 +134,5 @@ impl Drop for Progress {
         if !self.bar.is_finished() {
             self.bar.finish_and_clear();
         }
-    }
-}
-
-/// `1234567` -> `1 234 567`.
-fn group_thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(' ');
-        }
-        out.push(c);
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::group_thousands;
-
-    #[test]
-    fn groups_thousands_with_spaces() {
-        assert_eq!(group_thousands(0), "0");
-        assert_eq!(group_thousands(999), "999");
-        assert_eq!(group_thousands(1_000), "1 000");
-        assert_eq!(group_thousands(1_234_567), "1 234 567");
     }
 }

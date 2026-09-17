@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, BufWriter, Read};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -53,6 +53,9 @@ struct TransformArgs {
     /// Fait tout sauf écrire la sortie (valide la config et le dump).
     #[arg(long)]
     dry_run: bool,
+    /// Affiche le détail par colonne dans le résumé final.
+    #[arg(long)]
+    verbose: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -152,15 +155,25 @@ fn cmd_transform(args: TransformArgs) -> Result<bool> {
         }
     }
 
-    progress.finish_rows();
     report.finish();
+    // La barre affiche elle-même la ligne de bilan ; si elle est masquée
+    // (stderr non interactif), on l'écrit nous-mêmes.
+    let bar_hidden = progress.is_hidden();
+    progress.finish_transform(report.rows_out(), report.tables.len());
+
     // Si le dump part sur stdout, le rapport ne doit pas s'y mélanger.
-    if args.out.is_none() && !args.dry_run {
-        let _ = report.write_terminal(&mut io::stderr().lock());
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let mut w: Box<dyn Write> = if args.out.is_none() && !args.dry_run {
+        Box::new(stderr.lock())
     } else {
-        report.print_terminal();
+        Box::new(stdout.lock())
+    };
+    if bar_hidden {
+        let _ = report.write_header(&mut w);
     }
-    let _ = report.write_json(std::path::Path::new(".sosie"));
+    let _ = report.write_summary(&mut w, args.verbose);
+    let _ = report.write_json(std::path::Path::new(sosie::report::JSON_DIR));
     Ok(true)
 }
 
