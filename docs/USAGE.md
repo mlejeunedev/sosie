@@ -66,12 +66,13 @@ Options :
 - `--from <fichier>` : par défaut, lit `stdin`.
 - `--out <fichier>` : par défaut, écrit sur `stdout`. Avec `--out`, l'écriture est atomique (fichier temporaire puis renommage ; en cas d'erreur, le fichier temporaire est supprimé, jamais de sortie partielle sous le nom final).
 - `--dry-run` : fait tout (parse, transforme) sans écrire la sortie.
+- `--verbose` : détaille le résumé final colonne par colonne (transformées / null / gardées / tronquées).
 
 Garde-fou intégré : si une colonne n'a pas de règle dans la config **et** que son nom correspond à un motif sensible (email, password, iban, phone...), `transform` refuse de démarrer — sans avoir besoin d'avoir lancé `check` avant. C'est une sécurité de dernier recours basée sur le nom seul (pas le contenu, qui nécessiterait de rejouer tout le dump).
 
 Pendant l'exécution : une barre de progression sur stderr (pourcentage, débit, ETA, table courante et lignes traitées) si `--from` est un fichier, un spinner avec les octets lus si l'entrée vient de stdin. Elle est masquée automatiquement quand stderr n'est pas un terminal (CI, redirection).
 
-À la fin : un résumé sur le terminal (lignes/colonnes traitées par table) et un rapport détaillé écrit dans `.sosie/last-report.json` — uniquement des compteurs, jamais une valeur réelle. Quand le dump part sur stdout (pas de `--out`), le résumé est envoyé sur stderr pour ne jamais se mélanger au SQL.
+À la fin : un résumé compact sur le terminal — une ligne de bilan, une ligne par table transformée (lignes et nombre de colonnes touchées), les tables skippées, les tables sorties sans transformation regroupées sur une ligne, et un avertissement `⚠` seulement si des valeurs ont dû être tronquées. Avec `--verbose`, le détail colonne par colonne. Un rapport complet est écrit dans `.sosie/last-report.json` — uniquement des compteurs, jamais une valeur réelle. Quand le dump part sur stdout (pas de `--out`), le résumé est envoyé sur stderr pour ne jamais se mélanger au SQL.
 
 ### `sosie presets` — lister les presets disponibles
 
@@ -120,11 +121,17 @@ check OK : 6 tables, aucune colonne sensible sans règle.
 
 ```bash
 $ sosie transform --from dump.sql --config sosie.yaml --out dump_clean.sql
-sosie transform — terminé en 0.0s
-  user — 5 lignes
-    email: 5 transformées, first_name: 5, last_name: 5, password: 5, phone: 4/1 null...
-  audit_log — skippée (structure gardée, 0 ligne)
+✔ anonymize  16 lignes · 6 tables · 7.16 KiB en 1 ms
+  address       3 lignes · 3 colonnes
+  audit_log     skippée
+  bank_account  2 lignes · 3 colonnes
+  order         4 lignes · 1 colonne
+  user          5 lignes · 6 colonnes
+  1 table sans transformation : product
+  détail : .sosie/last-report.json
 ```
+
+(`sosie transform --verbose` détaille chaque colonne : transformées, null, gardées, tronquées.)
 
 Une ligne réelle, avant/après :
 

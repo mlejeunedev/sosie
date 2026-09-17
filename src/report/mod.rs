@@ -2,12 +2,16 @@
 //! jamais une valeur de donnée.
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
 use serde::Serialize;
+
+/// Emplacement du rapport JSON détaillé, relatif au répertoire courant.
+pub const JSON_DIR: &str = ".sosie";
+pub const JSON_FILE: &str = "last-report.json";
 
 #[derive(Debug, Default, Serialize, Clone)]
 pub struct ColumnReport {
@@ -17,12 +21,30 @@ pub struct ColumnReport {
     pub truncated: u64,
 }
 
+impl ColumnReport {
+    /// Une colonne est « touchée » si elle a reçu au moins une transformation
+    /// ou une troncature.
+    fn touched(&self) -> bool {
+        self.transformed > 0 || self.truncated > 0
+    }
+}
+
 #[derive(Debug, Default, Serialize, Clone)]
 pub struct TableReport {
     pub rows_in: u64,
     pub rows_out: u64,
     pub skipped: bool,
     pub columns: BTreeMap<String, ColumnReport>,
+}
+
+impl TableReport {
+    fn touched_columns(&self) -> usize {
+        self.columns.values().filter(|c| c.touched()).count()
+    }
+
+    fn truncated(&self) -> u64 {
+        self.columns.values().map(|c| c.truncated).sum()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -61,31 +83,27 @@ impl Report {
         self.tables.values().map(|t| t.rows_out).sum()
     }
 
-    /// Écrit le rapport lisible sur `w` (stdout ou stderr selon que stdout
-    /// transporte déjà le dump ou non).
-    pub fn write_terminal<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+    /// Ligne de bilan, utilisée quand la barre de progression est masquée
+    /// (stderr non interactif) et ne peut donc pas l'afficher elle-même :
+    /// `✔ anonymize  531 840 lignes · 9 tables · 2.2s`.
+    pub fn write_header<W: Write>(&self, w: &mut W) -> io::Result<()> {
         writeln!(
             w,
-            "sosie transform — terminé en {:.1}s · {} lignes · {} tables",
-            self.duration_ms as f64 / 1000.0,
-            self.rows_out(),
-            self.tables.len()
-        )?;
-        for (table, t) in &self.tables {
-            if t.skipped {
-                writeln!(w, "  {table} — skippée (structure gardée, 0 ligne)")?;
-                continue;
-            }
-            writeln!(w, "  {table} — {} lignes", t.rows_out)?;
-            for (column, c) in &t.columns {
-                if c.transformed > 0 || c.truncated > 0 {
-                    writeln!(
-                        w,
-                        "    {column}: {} transformées, {} null, {} gardées, {} tronquées",
-                        c.transformed, c.null, c.kept, c.truncated
-                    )?;
-                }
-            }
+            "✔ {}  {} lignes · {} tables · {:.1}s",
+            self.mode,
+            group_thousands(self.rows_out()),
+            self.tables.len(),
+            self.duration_ms as f64 / 1000.0
+        )
+    }
+
+    /// Corps du résumé lisible. Par défaut, une ligne par table touchée et
+    /// seulement ce qui mérite attention ; en `verbose`, le détail par colonne.
+    pub fn write_summary<W: Write>(&self, w: &mut W, verbose: bool) -> io::Result<()> {
+        if verbose {
+            self.write_columns(w)?;
+        } else {
+            self.write_tables(w)?;
         }
         if !self.raw_notable.is_empty() {
             writeln!(
@@ -94,40 +112,211 @@ impl Report {
                 self.raw_notable.join(", ")
             )?;
         }
+        writeln!(w, "  détail : {JSON_DIR}/{JSON_FILE}")
+    }
+
+    fn write_tables<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let name_width = self
+            .tables
+            .keys()
+            .map(|k| k.chars().count())
+            .max()
+            .unwrap_or(0);
+        let rows_width = self
+            .tables
+            .values()
+            .filter(|t| !t.skipped && t.touched_columns() > 0)
+            .map(|t| group_thousands(t.rows_out).len())
+            .max()
+            .unwrap_or(0);
+
+        let mut untouched: Vec<&str> = Vec::new();
+        for (table, t) in &self.tables {
+            if t.skipped {
+                writeln!(w, "  {table:<name_width$}  skippée")?;
+                continue;
+            }
+            let cols = t.touched_columns();
+            if cols == 0 {
+                untouched.push(table);
+                continue;
+            }
+            let rows = group_thousands(t.rows_out);
+            let mut line = format!(
+                "  {table:<name_width$}  {rows:>rows_width$} lignes · {cols} {}",
+                plural(cols, "colonne")
+            );
+            let truncated = t.truncated();
+            if truncated > 0 {
+                line.push_str(&format!(" · ⚠ {} tronquées", group_thousands(truncated)));
+            }
+            writeln!(w, "{line}")?;
+        }
+        if !untouched.is_empty() {
+            writeln!(
+                w,
+                "  {} {} sans transformation : {}",
+                untouched.len(),
+                plural(untouched.len(), "table"),
+                untouched.join(", ")
+            )?;
+        }
         Ok(())
     }
 
-    pub fn print_terminal(&self) {
-        let _ = self.write_terminal(&mut std::io::stdout().lock());
+    fn write_columns<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for (table, t) in &self.tables {
+            if t.skipped {
+                writeln!(w, "  {table} — skippée (structure gardée, 0 ligne)")?;
+                continue;
+            }
+            writeln!(w, "  {table} — {} lignes", group_thousands(t.rows_out))?;
+            for (column, c) in &t.columns {
+                if c.touched() {
+                    writeln!(
+                        w,
+                        "    {column}: {} transformées, {} null, {} gardées, {} tronquées",
+                        c.transformed, c.null, c.kept, c.truncated
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn write_json(&self, dir: &Path) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(dir.join("last-report.json"), text)?;
+        std::fs::write(dir.join(JSON_FILE), text)?;
         Ok(())
     }
+}
+
+fn plural(n: usize, word: &str) -> String {
+    if n > 1 {
+        format!("{word}s")
+    } else {
+        word.to_string()
+    }
+}
+
+/// `1234567` -> `1 234 567`.
+pub fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn col(transformed: u64, null: u64, truncated: u64) -> ColumnReport {
+        ColumnReport {
+            transformed,
+            null,
+            kept: 0,
+            truncated,
+        }
+    }
+
+    fn sample_report() -> Report {
+        let mut report = Report::new("anonymize");
+        let user = report.table_mut("user");
+        user.rows_out = 300_000;
+        user.columns.insert("email".into(), col(300_000, 0, 0));
+        user.columns.insert("phone".into(), col(299_000, 1_000, 0));
+        user.columns.insert("nickname".into(), col(0, 0, 0)); // keep
+        let products = report.table_mut("products");
+        products.rows_out = 6_600;
+        products
+            .columns
+            .insert("productScale".into(), col(6_600, 0, 6_600));
+        report.table_mut("audit_log").skipped = true;
+        report.table_mut("orders").rows_out = 19_560;
+        report.table_mut("payments").rows_out = 16_380;
+        report
+    }
+
+    fn render(report: &Report, verbose: bool) -> String {
+        let mut buf = Vec::new();
+        report.write_summary(&mut buf, verbose).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
     #[test]
     fn json_report_never_contains_arbitrary_prose_field_for_values() {
         let mut report = Report::new("anonymize");
-        report.table_mut("user").columns.insert(
-            "email".to_string(),
-            ColumnReport {
-                transformed: 3,
-                null: 0,
-                kept: 0,
-                truncated: 1,
-            },
-        );
+        report
+            .table_mut("user")
+            .columns
+            .insert("email".to_string(), col(3, 0, 1));
         let json = serde_json::to_string(&report).unwrap();
         // Le rapport ne doit contenir que des compteurs : pas de champ "value"/"sample".
         assert!(!json.contains("\"value\""));
         assert!(!json.contains("\"sample\""));
+    }
+
+    #[test]
+    fn compact_summary_one_line_per_touched_table() {
+        let out = render(&sample_report(), false);
+        let expected = concat!(
+            "  audit_log  skippée\n",
+            "  products     6 600 lignes · 1 colonne · ⚠ 6 600 tronquées\n",
+            "  user       300 000 lignes · 2 colonnes\n",
+            "  2 tables sans transformation : orders, payments\n",
+            "  détail : .sosie/last-report.json\n",
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn compact_summary_omits_empty_sections() {
+        let mut report = Report::new("anonymize");
+        let user = report.table_mut("user");
+        user.rows_out = 5;
+        user.columns.insert("email".into(), col(5, 0, 0));
+        let out = render(&report, false);
+        assert!(!out.contains("sans transformation"));
+        assert!(!out.contains('⚠'));
+        assert!(!out.contains("skippée"));
+    }
+
+    #[test]
+    fn verbose_summary_lists_columns() {
+        let out = render(&sample_report(), true);
+        assert!(out.contains("  user — 300 000 lignes\n"));
+        assert!(out.contains("    email: 300000 transformées, 0 null, 0 gardées, 0 tronquées\n"));
+        assert!(
+            out.contains("    phone: 299000 transformées, 1000 null, 0 gardées, 0 tronquées\n")
+        );
+        assert!(!out.contains("nickname"));
+        assert!(out.contains("  audit_log — skippée (structure gardée, 0 ligne)\n"));
+    }
+
+    #[test]
+    fn header_line() {
+        let mut report = sample_report();
+        report.duration_ms = 2_240;
+        let mut buf = Vec::new();
+        report.write_header(&mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "✔ anonymize  342 540 lignes · 5 tables · 2.2s\n"
+        );
+    }
+
+    #[test]
+    fn groups_thousands_with_spaces() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_000), "1 000");
+        assert_eq!(group_thousands(1_234_567), "1 234 567");
     }
 }
