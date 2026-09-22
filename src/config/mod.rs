@@ -189,16 +189,16 @@ fn check_no_secrets(raw: &serde_yaml::Value) -> Result<()> {
                 "clé interdite `{key}` à la racine de la config : ne mets jamais de secret (dsn/password/key) dedans, utilise une variable d'environnement"
             );
         }
-        if key == "source" {
-            if let Some(source) = v.as_mapping() {
-                for (sk, _) in source {
-                    if let Some(skey) = sk.as_str() {
-                        if FORBIDDEN_KEYS.contains(&skey) {
-                            bail!(
-                                "clé interdite `source.{skey}` : ne mets jamais de secret (dsn/password/key) dedans, utilise une variable d'environnement"
-                            );
-                        }
-                    }
+        if key == "source"
+            && let Some(source) = v.as_mapping()
+        {
+            for (sk, _) in source {
+                if let Some(skey) = sk.as_str()
+                    && FORBIDDEN_KEYS.contains(&skey)
+                {
+                    bail!(
+                        "clé interdite `source.{skey}` : ne mets jamais de secret (dsn/password/key) dedans, utilise une variable d'environnement"
+                    );
                 }
             }
         }

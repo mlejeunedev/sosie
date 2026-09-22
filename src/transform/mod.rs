@@ -427,7 +427,7 @@ pub fn run_with_progress<R: Read, W: Write, F: FnMut(Progress<'_>)>(
                 tr.rows_out += 1;
                 out.write_event(&Event::Row(transformed))?;
                 rows_total += 1;
-                if rows_total % PROGRESS_EVERY_ROWS == 0 {
+                if rows_total.is_multiple_of(PROGRESS_EVERY_ROWS) {
                     on_progress(Progress::Rows(rows_total));
                 }
             }
