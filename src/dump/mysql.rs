@@ -498,10 +498,10 @@ fn parse_create_table(stmt: &[u8]) -> Result<Table> {
             columns.push(parse_column_def(def)?);
         } else if contains_word_ci(def, b"FOREIGN KEY") {
             foreign_keys.push(String::from_utf8_lossy(def).into_owned());
-        } else if let Some(col_name) = single_column_unique_constraint(def) {
-            if let Some(col) = columns.iter_mut().find(|c| c.name == col_name) {
-                col.unique = true;
-            }
+        } else if let Some(col_name) = single_column_unique_constraint(def)
+            && let Some(col) = columns.iter_mut().find(|c| c.name == col_name)
+        {
+            col.unique = true;
         }
         // KEY / CONSTRAINT (CHECK) / FULLTEXT / clés composites : ignorés.
     }
@@ -606,7 +606,7 @@ fn parse_value(token: &[u8]) -> Result<Value<'_>> {
 /// séquences `\'`, `\"`, `\\`, `\n`, `\r`, `\t`, `\0`, `\Z`, `\b`, ainsi que
 /// l'apostrophe doublée `''`. Ne copie que si une séquence a été trouvée.
 fn unescape_sql_string(inner: &[u8]) -> Cow<'_, [u8]> {
-    if !inner.iter().any(|&b| b == b'\\') && !inner.windows(2).any(|w| w == b"''") {
+    if !inner.contains(&b'\\') && !inner.windows(2).any(|w| w == b"''") {
         return Cow::Borrowed(inner);
     }
     let mut out = Vec::with_capacity(inner.len());
@@ -1113,11 +1113,11 @@ mod tests {
         let mut parser = MysqlParser::new(input);
         let mut user_table = None;
         while let Some(event) = parser.next_event().unwrap() {
-            if let Event::TableSchema(t) = event {
-                if t.name == "user" {
-                    user_table = Some(t);
-                    break;
-                }
+            if let Event::TableSchema(t) = event
+                && t.name == "user"
+            {
+                user_table = Some(t);
+                break;
             }
         }
         let user = user_table.expect("table user introuvable");

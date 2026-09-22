@@ -24,11 +24,20 @@ Le cœur du projet est implémenté et testé :
 - rapport de fin d'exécution (compteurs uniquement, jamais une valeur de donnée) ;
 - barre de progression sur stderr (pourcentage, débit, ETA, table courante), masquée hors terminal.
 
-Pas encore fait (finitions, non bloquantes) : sortie compressée, benchmark à grande échelle, binaires de release. Détails, limitations précises et référence complète : **[`docs/USAGE.md`](docs/USAGE.md)**.
+Pas encore fait (finitions, non bloquantes) : sortie compressée, benchmark à grande échelle, première publication sur crates.io et première Release GitHub (le workflow de build des binaires existe, il ne s'est juste pas encore déclenché sur un tag). Détails, limitations précises et référence complète : **[`docs/USAGE.md`](docs/USAGE.md)**.
 
 ## Installation
 
-Nécessite Rust (voir `rust-toolchain.toml` pour la version exacte, installée automatiquement par `rustup`).
+**Avec Rust installé** — compile et installe le binaire dans `~/.cargo/bin/` :
+
+```bash
+cargo install sosie
+sosie --help
+```
+
+**Sans Rust** — télécharge le binaire précompilé pour ta plateforme depuis la [page des Releases GitHub](https://github.com/mlejeunedev/sosie/releases), décompresse l'archive et lance `./sosie --help`.
+
+**Depuis les sources** — pour contribuer ou suivre la branche de développement :
 
 ```bash
 git clone <ce dépôt>
