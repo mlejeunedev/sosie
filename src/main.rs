@@ -29,51 +29,51 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Transforme un dump selon une config, en streaming.
+    /// Transform a dump according to a config, in streaming mode.
     Transform(TransformArgs),
-    /// Analyse un dump et propose un fichier de config de départ.
+    /// Analyze a dump and generate a starter config file.
     Init(InitArgs),
-    /// Vérifie qu'une config couvre bien toutes les colonnes sensibles d'un dump.
+    /// Check that a config covers every sensitive column of a dump.
     Check(CheckArgs),
-    /// Liste les presets disponibles avec un exemple généré.
+    /// List available presets with a generated example.
     Presets,
 }
 
 #[derive(Parser, Debug)]
 struct TransformArgs {
-    /// Fichier source (`mysqldump`). Par défaut : stdin.
+    /// Source file (`mysqldump`). Defaults to stdin.
     #[arg(long)]
     from: Option<PathBuf>,
-    /// Fichier de config `sosie.yaml`.
+    /// Config file (`sosie.yaml`).
     #[arg(long)]
     config: PathBuf,
-    /// Fichier de sortie. Par défaut : stdout.
+    /// Output file. Defaults to stdout.
     #[arg(long)]
     out: Option<PathBuf>,
-    /// Fait tout sauf écrire la sortie (valide la config et le dump).
+    /// Do everything except write the output (validates config and dump).
     #[arg(long)]
     dry_run: bool,
-    /// Affiche le détail par colonne dans le résumé final.
+    /// Show per-column details in the final summary.
     #[arg(long)]
     verbose: bool,
 }
 
 #[derive(Parser, Debug)]
 struct InitArgs {
-    /// Dump `mysqldump` à analyser.
+    /// `mysqldump` dump to analyze.
     #[arg(long)]
     from: PathBuf,
-    /// Fichier de config à écrire.
+    /// Config file to write.
     #[arg(long, default_value = "sosie.yaml")]
     out: PathBuf,
 }
 
 #[derive(Parser, Debug)]
 struct CheckArgs {
-    /// Dump `mysqldump` à analyser.
+    /// `mysqldump` dump to analyze.
     #[arg(long)]
     from: PathBuf,
-    /// Fichier de config `sosie.yaml` à vérifier.
+    /// `sosie.yaml` config file to check.
     #[arg(long)]
     config: PathBuf,
 }
@@ -156,12 +156,12 @@ fn cmd_transform(args: TransformArgs) -> Result<bool> {
     }
 
     report.finish();
-    // La barre affiche elle-même la ligne de bilan ; si elle est masquée
-    // (stderr non interactif), on l'écrit nous-mêmes.
+    // The progress bar prints its own summary line; when it is hidden
+    // (non-interactive stderr), print it here.
     let bar_hidden = progress.is_hidden();
     progress.finish_transform(report.rows_out(), report.tables.len());
 
-    // Si le dump part sur stdout, le rapport ne doit pas s'y mélanger.
+    // Keep the report off stdout when the dump is written there.
     let stdout = io::stdout();
     let stderr = io::stderr();
     let mut w: Box<dyn Write> = if args.out.is_none() && !args.dry_run {
@@ -177,8 +177,8 @@ fn cmd_transform(args: TransformArgs) -> Result<bool> {
     Ok(true)
 }
 
-/// Ouvre le flux d'entrée (`path`, sinon stdin) et retourne sa taille si
-/// elle est connue, pour dimensionner la barre de progression.
+/// Opens the input stream (`path`, or stdin) and returns its size when known,
+/// to scale the progress bar.
 fn open_input(path: Option<&std::path::Path>) -> Result<(Box<dyn Read>, Option<u64>)> {
     match path {
         Some(path) => {
@@ -191,7 +191,7 @@ fn open_input(path: Option<&std::path::Path>) -> Result<(Box<dyn Read>, Option<u
     }
 }
 
-/// Analyse un dump avec un spinner « analyse » sur stderr.
+/// Analyzes a dump with an `analyse` spinner on stderr.
 fn scan_with_progress(path: &std::path::Path) -> Result<Vec<scan::ScannedTable>> {
     let (reader, total_bytes) = open_input(Some(path))?;
     let progress = Progress::new(total_bytes, "analyse");

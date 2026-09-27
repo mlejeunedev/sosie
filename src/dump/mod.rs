@@ -4,7 +4,7 @@ use anyhow::Result;
 
 pub mod mysql;
 
-/// Une colonne telle que déclarée dans un `CREATE TABLE`.
+/// A column as declared in a `CREATE TABLE`.
 #[derive(Debug, Clone)]
 pub struct Column {
     pub name: String,
@@ -12,25 +12,25 @@ pub struct Column {
     pub nullable: bool,
     pub max_len: Option<u32>,
     pub generated: bool,
-    /// `true` si cette colonne, à elle seule, est couverte par une contrainte
-    /// `PRIMARY KEY` ou `UNIQUE KEY` (les clés composites ne comptent pas :
-    /// aucune de leurs colonnes individuelles n'est unique à elle seule).
+    /// `true` if this column alone is covered by a `PRIMARY KEY` or `UNIQUE KEY`
+    /// constraint. Composite keys don't count: none of their columns is unique
+    /// on its own.
     pub unique: bool,
 }
 
-/// Une table telle que déclarée dans un `CREATE TABLE`.
+/// A table as declared in a `CREATE TABLE`.
 #[derive(Debug, Clone)]
 pub struct Table {
     pub name: String,
     pub columns: Vec<Column>,
-    /// Définitions `FOREIGN KEY` brutes, conservées pour la v0.2 (coût nul ici).
+    /// Raw `FOREIGN KEY` definitions, kept for v0.2 (no cost here).
     pub foreign_keys: Vec<String>,
-    /// L'instruction `CREATE TABLE` complète, telle que lue dans le dump :
-    /// on ne régénère jamais un `CREATE TABLE`, on le réécrit à l'identique.
+    /// The full `CREATE TABLE` statement as read from the dump: it is always
+    /// rewritten verbatim, never regenerated.
     pub raw: Vec<u8>,
 }
 
-/// Type SQL d'une colonne, tel qu'extrait de sa déclaration `CREATE TABLE`.
+/// SQL type of a column, as extracted from its `CREATE TABLE` declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlType {
     Int,
@@ -48,53 +48,53 @@ pub enum SqlType {
     Other(String),
 }
 
-/// Une valeur brute lue depuis un tuple de `VALUES`.
+/// A raw value read from a `VALUES` tuple.
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
-    /// Le littéral SQL `NULL`.
+    /// The SQL `NULL` literal.
     Null,
 
-    /// Tout ce qui n'est pas une chaîne SQL (nombres, `0x…`, `_binary '…'`,
-    /// `b'…'`). Copié tel quel, jamais transformé.
+    /// Anything that is not an SQL string (numbers, `0x…`, `_binary '…'`,
+    /// `b'…'`). Copied verbatim, never transformed.
     Raw(&'a [u8]),
 
-    /// Contenu désescapé d'une chaîne `'…'`. Le sérialiseur ré-échappe.
+    /// Unescaped content of a `'…'` string. The serializer re-escapes it.
     Str(Cow<'a, [u8]>),
 }
 
-/// Un événement produit par un [`DumpParser`] et consommé par un [`DumpWriter`].
+/// An event produced by a [`DumpParser`] and consumed by a [`DumpWriter`].
 pub enum Event<'a> {
-    /// Tout ce qui n'est ni un `CREATE TABLE` ni un `INSERT INTO`, réécrit tel quel.
+    /// Anything that is neither a `CREATE TABLE` nor an `INSERT INTO`, rewritten verbatim.
     Raw(&'a [u8]),
-    /// Un `CREATE TABLE`, conservé aussi en `Raw` par le parseur pour être réécrit à l'identique.
+    /// A `CREATE TABLE`; the parser also keeps it as `Raw` to rewrite it verbatim.
     TableSchema(Table),
-    /// Début d'un bloc `INSERT INTO`.
+    /// Start of an `INSERT INTO` block.
     RowsBegin {
         table: String,
-        /// `Some` si l'`INSERT` a une liste de colonnes explicite (cas des colonnes générées).
+        /// `Some` if the `INSERT` has an explicit column list (generated columns).
         columns: Option<Vec<String>>,
-        /// Texte brut de `INSERT INTO ... VALUES ` (jusqu'au premier `(` inclus
-        /// exclu), conservé pour réécrire le préfixe à l'identique.
+        /// Raw `INSERT INTO ... VALUES ` text (up to, but excluding, the first `(`),
+        /// kept to rewrite the prefix verbatim.
         prefix: &'a [u8],
     },
-    /// Un tuple de valeurs, dans l'ordre de `RowsBegin.columns` si présent, sinon celui de la table.
+    /// A value tuple, ordered as `RowsBegin.columns` if present, otherwise as the table.
     Row(Vec<Value<'a>>),
-    /// Fin du bloc `INSERT INTO` ouvert par `RowsBegin`.
+    /// End of the `INSERT INTO` block opened by `RowsBegin`.
     RowsEnd,
 }
 
 pub trait DumpParser {
-    /// Lit et retourne le prochain événement, ou `None` en fin de flux.
+    /// Reads and returns the next event, or `None` at end of stream.
     fn next_event(&mut self) -> Result<Option<Event<'_>>>;
 
-    /// Abandonne les `Row` du bloc `INSERT` ouvert par le dernier `RowsBegin`
-    /// (ni `Row` ni `RowsEnd` ne seront émis pour ce bloc) : le prochain
-    /// événement est l'instruction suivante. Permet de ne pas payer le parsing
-    /// des tuples d'une table que l'appelant n'écrira pas.
+    /// Discards the `Row`s of the `INSERT` block opened by the last `RowsBegin`
+    /// (no `Row` or `RowsEnd` is emitted for it): the next event is the
+    /// following statement. Avoids parsing tuples of a table the caller won't
+    /// write.
     fn skip_rows(&mut self);
 }
 
 pub trait DumpWriter {
-    /// Écrit un événement dans le flux de sortie.
+    /// Writes an event to the output stream.
     fn write_event(&mut self, ev: &Event) -> Result<()>;
 }

@@ -1,4 +1,4 @@
-//! Presets d'anonymisation/pseudonymisation.
+//! Anonymization/pseudonymization presets.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -13,7 +13,7 @@ use sha2::Sha256;
 
 use crate::dump::Value;
 
-/// Noms de presets connus en v0.1. `config::KNOWN_PRESETS` réexporte cette liste.
+/// Preset names known in v0.1. Re-exported as `config::KNOWN_PRESETS`.
 pub const KNOWN_PRESETS: &[&str] = &[
     "hash",
     "email",
@@ -30,7 +30,7 @@ pub const KNOWN_PRESETS: &[&str] = &[
     "ip",
 ];
 
-/// Graine déterministe pour une valeur donnée : `HMAC-SHA256(key, preset || 0x00 || valeur)`.
+/// Deterministic seed for a value: `HMAC-SHA256(key, preset || 0x00 || value)`.
 pub struct Seed([u8; 32]);
 
 impl Seed {
@@ -39,9 +39,8 @@ impl Seed {
     }
 }
 
-/// Dérive la graine d'une valeur pour un preset donné. Deux appels avec la
-/// même clé, le même preset et la même valeur d'entrée donnent toujours la
-/// même graine (déterminisme requis par le mode `pseudonymize`).
+/// Derives a value's seed for a given preset. The same key, preset and input
+/// always yield the same seed (required by `pseudonymize` mode).
 pub fn seed_for(key: &[u8], preset: &str, value: &[u8]) -> Seed {
     let mut mac =
         Hmac::<Sha256>::new_from_slice(key).expect("HMAC-SHA256 accepte une clé de toute taille");
@@ -51,15 +50,15 @@ pub fn seed_for(key: &[u8], preset: &str, value: &[u8]) -> Seed {
     Seed(mac.finalize().into_bytes().into())
 }
 
-/// Contexte transmis à un preset pour la colonne qu'il transforme.
+/// Context passed to a preset for the column it transforms.
 pub struct ColumnCtx {
     pub max_len: Option<u32>,
 }
 
-/// Un preset transforme une valeur non-nulle et non-vide en une autre valeur,
-/// de façon déterministe pour une graine donnée. Les règles transverses
-/// (`Null` → `Null`, chaîne vide → chaîne vide, troncature à `max_len`) sont
-/// appliquées par le moteur de transformation, pas par le preset lui-même.
+/// A preset maps a non-null, non-empty value to another value,
+/// deterministically for a given seed. Cross-cutting rules (`Null` → `Null`,
+/// empty string → empty string, truncation to `max_len`) are applied by the
+/// transformation engine, not by the preset itself.
 pub trait Preset {
     fn apply<'a>(&self, input: &Value<'a>, seed: &Seed, ctx: &ColumnCtx) -> Value<'a>;
 }
@@ -68,7 +67,7 @@ fn str_owned(s: String) -> Value<'static> {
     Value::Str(Cow::Owned(s.into_bytes()))
 }
 
-/// Construit un preset à partir de son nom et de ses paramètres (issus de la config).
+/// Builds a preset from its name and parameters (from the config).
 pub fn build(name: &str, params: &BTreeMap<String, serde_yaml::Value>) -> Result<Box<dyn Preset>> {
     match name {
         "hash" => Ok(Box::new(HashPreset)),
@@ -98,7 +97,7 @@ pub fn build(name: &str, params: &BTreeMap<String, serde_yaml::Value>) -> Result
 }
 
 // ---------------------------------------------------------------------------
-// Données embarquées (fr_FR)
+// Embedded data (fr_FR)
 // ---------------------------------------------------------------------------
 
 fn lines_of(text: &'static str) -> Vec<&'static str> {
@@ -123,7 +122,7 @@ fn streets() -> &'static [&'static str] {
     DATA.get_or_init(|| lines_of(include_str!("data/fr_FR/streets.txt")))
 }
 
-/// `(ville, code_postal)`.
+/// `(city, postal_code)`.
 fn cities() -> &'static [(&'static str, &'static str)] {
     static DATA: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
     DATA.get_or_init(|| {
@@ -167,12 +166,11 @@ impl Preset for EmailPreset {
         let mut rng = seed.rng();
         let first = pick(&mut rng, first_names()).to_lowercase();
         let last = pick(&mut rng, last_names()).to_lowercase();
-        // `first`/`last` ne donnent que ~50×50 combinaisons : sur un vrai
-        // volume de lignes, deux valeurs d'entrée différentes finiraient par
-        // produire le même faux email (déjà ~18 % de collisions sur 1000
-        // entrées avant ce correctif), ce qui viole une contrainte UNIQUE au
-        // moment de l'import. Le suffixe hexadécimal, dérivé du reste de la
-        // graine, rend ça négligeable sans perdre le déterminisme.
+        // `first`/`last` only yield ~50×50 combinations: on real data volumes,
+        // distinct inputs would eventually produce the same fake email (~18%
+        // collisions over 1000 inputs before this fix), violating UNIQUE
+        // constraints on import. A hex suffix derived from the rest of the seed
+        // makes this negligible while keeping it deterministic.
         let suffix: u32 = rng.random_range(0..0x1000000);
         str_owned(format!("{first}.{last}.{suffix:06x}@example.org"))
     }
@@ -276,8 +274,8 @@ impl Preset for IbanPreset {
         }
         let country: String = chars[0..2].iter().collect();
         let mut rng = seed.rng();
-        // Mêmes positions "lettre"/"chiffre" que l'original (à partir du BBAN,
-        // les 2 caractères de clé seront de toute façon recalculés).
+        // Same letter/digit positions as the original (from the BBAN onward; the
+        // two check digits are recomputed anyway).
         let mut bban: Vec<char> = chars[4..]
             .iter()
             .map(|c| {
@@ -316,7 +314,7 @@ impl Preset for BicPreset {
                 .collect()
         };
         let bank = random_letters(&mut rng, 4);
-        let country: String = chars[4..6].iter().collect(); // conservé
+        let country: String = chars[4..6].iter().collect(); // kept
         let location = random_letters(&mut rng, 2);
         let branch: String = if chars.len() == 11 {
             random_letters(&mut rng, 3)
@@ -388,11 +386,11 @@ impl Preset for IpPreset {
 }
 
 // ---------------------------------------------------------------------------
-// IBAN : recalcul de la clé (ISO 7064 mod 97-10)
+// IBAN: check digit recomputation (ISO 7064 mod 97-10)
 // ---------------------------------------------------------------------------
 
-/// Vérifie la clé de contrôle mod 97 d'un IBAN (sans espaces). Utilisé par
-/// `scan` pour la détection par contenu.
+/// Validates the mod-97 check digits of an IBAN (without spaces). Used by
+/// `scan` for content-based detection.
 pub fn iban_is_valid(iban: &str) -> bool {
     if iban.len() < 8 {
         return false;
@@ -404,7 +402,7 @@ pub fn iban_is_valid(iban: &str) -> bool {
 }
 
 fn iban_check_digits(country: &str, bban: &str) -> String {
-    // Réarrangement : BBAN + pays + "00", lettres converties en chiffres (A=10..Z=35).
+    // Rearrange: BBAN + country + "00", letters converted to digits (A=10..Z=35).
     let rearranged = format!("{bban}{country}00");
     let mut numeric = String::with_capacity(rearranged.len() * 2);
     for c in rearranged.chars() {
@@ -424,15 +422,15 @@ fn iban_check_digits(country: &str, bban: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Dates : conversion jour civil <-> nombre de jours depuis une époque, sans
-// dépendance externe (algorithme d'Howard Hinnant, domaine public).
+// Dates: civil date <-> days since an epoch, with no external dependency
+// (Howard Hinnant's algorithm, public domain).
 // ---------------------------------------------------------------------------
 
 struct ParsedDate {
     year: i64,
     month: u32,
     day: u32,
-    /// Partie horaire (`HH:MM:SS[.ffffff]`), conservée telle quelle.
+    /// Time part (`HH:MM:SS[.ffffff]`), kept as is.
     time: Option<String>,
 }
 
@@ -460,7 +458,7 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
-    let mp = (m as i64 + 9) % 12; // [0, 11] mars=0 ... fevrier=11
+    let mp = (m as i64 + 9) % 12; // [0, 11] March=0 ... February=11
     let doy = (153 * mp + 2) / 5 + d as i64 - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     era * 146097 + doe - 719468
@@ -526,9 +524,9 @@ mod tests {
 
     #[test]
     fn email_preset_does_not_collide_on_distinct_inputs() {
-        // Une colonne `email` a presque toujours une contrainte UNIQUE en
-        // prod : deux entrées différentes ne doivent (quasiment) jamais
-        // produire la même sortie, sous peine de faire planter l'import.
+        // An `email` column almost always has a UNIQUE constraint in production:
+        // distinct inputs must (almost) never produce the same output, or the
+        // import fails.
         use std::collections::HashSet;
         let mut outputs = HashSet::new();
         for i in 0..1000 {

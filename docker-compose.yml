@@ -1,7 +1,7 @@
-# Bac à sable local pour tester des cycles import/export mysqldump <-> sosie,
-# sans toucher à une vraie base. `docker compose up -d`, puis :
-#   - phpMyAdmin : http://localhost:8080 (utilisateur root / mot de passe root)
-#   - MariaDB en direct : mysql -h127.0.0.1 -P3306 -uroot -proot
+# Local sandbox for testing mysqldump <-> sosie import/export cycles without
+# touching a real database. Run `docker compose up -d`, then:
+#   - phpMyAdmin: http://localhost:8080 (user root / password root)
+#   - MariaDB directly: mysql -h127.0.0.1 -P3306 -uroot -proot
 
 services:
   mariadb:
@@ -17,8 +17,8 @@ services:
       - "3306:3306"
     volumes:
       - mariadb_data:/var/lib/mysql
-      # Fixtures du projet montées en lecture seule : pratique pour importer
-      # un dump de test depuis le CLI dans le conteneur, ex. :
+      # Project fixtures mounted read-only, handy for importing a test dump
+      # from the CLI inside the container, e.g.:
       #   docker compose exec mariadb sh -c 'mysql -uroot -proot shop < /dumps/01_basic.sql'
       - ./fixtures/exemples/dumps:/dumps:ro
     healthcheck:
@@ -35,8 +35,8 @@ services:
       PMA_HOST: mariadb
       PMA_USER: root
       PMA_PASSWORD: root
-      # Les dumps de test sont petits, mais on relève la limite d'upload web
-      # au cas où tu veuilles importer un dump_clean.sql plus gros.
+      # Test dumps are small, but the web upload limit is raised in case you
+      # want to import a larger dump_clean.sql.
       UPLOAD_LIMIT: 512M
     ports:
       - "8080:80"

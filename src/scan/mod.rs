@@ -1,4 +1,4 @@
-//! Détection des colonnes sensibles, par nom et par contenu (`init`/`check`).
+//! Sensitive column detection, by name and by content (`init`/`check`).
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -40,7 +40,7 @@ impl Classification {
 }
 
 fn normalize(name: &str) -> String {
-    // camelCase -> snake_case, puis minuscule.
+    // camelCase -> snake_case, then lowercase.
     let mut out = String::with_capacity(name.len() + 4);
     for (i, c) in name.chars().enumerate() {
         if c.is_uppercase() && i > 0 {
@@ -53,7 +53,7 @@ fn normalize(name: &str) -> String {
 
 const EXCLUDED_GENERIC_NAME: &[&str] = &["table_name", "file_name", "class_name", "role_name"];
 
-/// Signal 1 : détection par nom de colonne. Voir cahier des charges §5.5.
+/// Signal 1: detection by column name. See `docs/CAHIER_DES_CHARGES.md` §5.5.
 pub fn classify_by_name(column: &str) -> Classification {
     let n = normalize(column);
     let hit = |patterns: &[&str]| patterns.iter().any(|p| n.contains(p));
@@ -175,7 +175,7 @@ pub fn classify_by_name(column: &str) -> Classification {
         };
     }
 
-    // Signal générique "name"/"holder", combinable, avec exclusions.
+    // Generic "name"/"holder" signal, combinable, with exclusions.
     if !EXCLUDED_GENERIC_NAME.contains(&n.as_str()) {
         let mut score: f64 = 0.0;
         let mut hits = Vec::new();
@@ -199,7 +199,7 @@ pub fn classify_by_name(column: &str) -> Classification {
     Classification::none()
 }
 
-/// Signal 2 : détection par contenu, sur un échantillon de valeurs non nulles.
+/// Signal 2: detection by content, on a sample of non-null values.
 fn classify_by_content(sql_type: &SqlType, samples: &[Vec<u8>]) -> Classification {
     if samples.is_empty() {
         return Classification::none();
@@ -346,8 +346,8 @@ fn is_iban(s: &str) -> bool {
     presets::iban_is_valid(&compact)
 }
 
-/// Une colonne du schéma, avec son échantillon de contenu (peut être vide si
-/// on n'a scanné que le schéma, sans les données).
+/// A schema column with its content sample (empty if only the schema was
+/// scanned, without data).
 pub struct ScannedColumn {
     pub name: String,
     pub sql_type: SqlType,
@@ -360,12 +360,12 @@ pub struct ScannedTable {
     pub columns: Vec<ScannedColumn>,
 }
 
-/// Rejoue un dump entier et construit, pour chaque table/colonne, la liste des
-/// tables avec un échantillon (jusqu'à 200 valeurs non nulles) par colonne texte.
+/// Replays a full dump and builds the list of tables, with a sample (up to
+/// 200 non-null values) per text column.
 pub fn scan_dump<R: Read>(reader: R) -> Result<Vec<ScannedTable>> {
     let mut parser = MysqlParser::new(reader);
     let mut tables: Vec<ScannedTable> = Vec::new();
-    let mut current: Option<(usize, Vec<usize>)> = None; // (table index, column index par position de Row)
+    let mut current: Option<(usize, Vec<usize>)> = None; // (table index, column index by Row position)
 
     while let Some(event) = parser.next_event()? {
         match event {
@@ -429,14 +429,14 @@ pub fn scan_dump<R: Read>(reader: R) -> Result<Vec<ScannedTable>> {
     Ok(tables)
 }
 
-/// Classifie toutes les colonnes d'un scan. Retourne `table.column -> Classification`.
+/// Classifies every column of a scan. Returns `table.column -> Classification`.
 pub fn classify(tables: &[ScannedTable]) -> BTreeMap<(String, String), Classification> {
     let mut out = BTreeMap::new();
     for table in tables {
         for column in &table.columns {
             if column.generated {
-                // Une colonne GENERATED n'apparaît jamais dans un INSERT
-                // (mysqldump l'omet) : impossible et inutile de la classer.
+                // GENERATED columns never appear in an INSERT (mysqldump omits them):
+                // they can't and needn't be classified.
                 continue;
             }
             let name_score = classify_by_name(&column.name);
@@ -450,7 +450,7 @@ pub fn classify(tables: &[ScannedTable]) -> BTreeMap<(String, String), Classific
     out
 }
 
-/// Colonnes qui nécessitent une règle explicite (`score >= 0.8`) mais n'en ont pas.
+/// Columns requiring an explicit rule (`score >= 0.8`) but lacking one.
 pub fn missing_mandatory(
     classifications: &BTreeMap<(String, String), Classification>,
     has_rule: impl Fn(&str, &str) -> bool,
@@ -464,7 +464,7 @@ pub fn missing_mandatory(
         .collect()
 }
 
-/// Colonnes en zone grise (`0.4 <= score < 0.8`) sans règle explicite.
+/// Gray-zone columns (`0.4 <= score < 0.8`) without an explicit rule.
 pub fn needs_review(
     classifications: &BTreeMap<(String, String), Classification>,
     has_rule: impl Fn(&str, &str) -> bool,
@@ -478,10 +478,10 @@ pub fn needs_review(
         .collect()
 }
 
-/// Génère le texte d'un `sosie.yaml` de départ : les colonnes `>= 0.8` avec
-/// leur preset proposé (un commentaire indique le signal déclencheur), et une
-/// section `review` pour la zone grise `0.4..0.8`. Écrit à la main (pas via
-/// serde) pour garder les commentaires, comme demandé par le plan.
+/// Generates a starter `sosie.yaml`: columns `>= 0.8` with their suggested
+/// preset (a comment names the triggering signal), plus a `review` section
+/// for the `0.4..0.8` gray zone. Written by hand rather than through serde
+/// to preserve the comments.
 pub fn render_init_yaml(tables: &[ScannedTable]) -> String {
     let classifications = classify(tables);
     let mut by_table: BTreeMap<&str, Vec<(&str, &Classification)>> = BTreeMap::new();
@@ -570,7 +570,7 @@ mod tests {
         assert!(get("bank_account", "iban").is_mandatory());
         assert_eq!(get("bank_account", "iban").preset, Some("iban"));
 
-        // Une colonne clairement neutre ne doit déclencher aucun signal.
+        // A clearly neutral column must not trigger any signal.
         assert_eq!(get("product", "price").score, 0.0);
         assert_eq!(get("user", "id").score, 0.0);
     }

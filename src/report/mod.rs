@@ -1,5 +1,4 @@
-//! Rapport de fin d'exécution de `transform` : uniquement des compteurs,
-//! jamais une valeur de donnée.
+//! End-of-run report for `transform`: counters only, never data values.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -9,7 +8,7 @@ use std::time::Instant;
 use anyhow::Result;
 use serde::Serialize;
 
-/// Emplacement du rapport JSON détaillé, relatif au répertoire courant.
+/// Path of the detailed JSON report, relative to the current directory.
 pub const JSON_DIR: &str = ".sosie";
 pub const JSON_FILE: &str = "last-report.json";
 
@@ -22,8 +21,7 @@ pub struct ColumnReport {
 }
 
 impl ColumnReport {
-    /// Une colonne est « touchée » si elle a reçu au moins une transformation
-    /// ou une troncature.
+    /// A column is "touched" if it was transformed or truncated at least once.
     fn touched(&self) -> bool {
         self.transformed > 0 || self.truncated > 0
     }
@@ -78,13 +76,13 @@ impl Report {
         }
     }
 
-    /// Nombre total de lignes émises, toutes tables confondues.
+    /// Total number of rows emitted, across all tables.
     pub fn rows_out(&self) -> u64 {
         self.tables.values().map(|t| t.rows_out).sum()
     }
 
-    /// Ligne de bilan, utilisée quand la barre de progression est masquée
-    /// (stderr non interactif) et ne peut donc pas l'afficher elle-même :
+    /// Summary line, used when the progress bar is hidden (non-interactive
+    /// stderr) and cannot print it itself:
     /// `✔ anonymize  531 840 lignes · 9 tables · 2.2s`.
     pub fn write_header<W: Write>(&self, w: &mut W) -> io::Result<()> {
         writeln!(
@@ -97,8 +95,8 @@ impl Report {
         )
     }
 
-    /// Corps du résumé lisible. Par défaut, une ligne par table touchée et
-    /// seulement ce qui mérite attention ; en `verbose`, le détail par colonne.
+    /// Human-readable summary body. By default, one line per touched table with
+    /// only what needs attention; in `verbose` mode, per-column details.
     pub fn write_summary<W: Write>(&self, w: &mut W, verbose: bool) -> io::Result<()> {
         if verbose {
             self.write_columns(w)?;
@@ -258,7 +256,7 @@ mod tests {
             .columns
             .insert("email".to_string(), col(3, 0, 1));
         let json = serde_json::to_string(&report).unwrap();
-        // Le rapport ne doit contenir que des compteurs : pas de champ "value"/"sample".
+        // The report must only contain counters: no "value"/"sample" field.
         assert!(!json.contains("\"value\""));
         assert!(!json.contains("\"sample\""));
     }

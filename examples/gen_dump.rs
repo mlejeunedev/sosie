@@ -1,14 +1,14 @@
-//! Génère un gros dump `mysqldump` synthétique et réaliste (schéma
-//! classicmodels + table `user`), pour tester sosie à grande échelle.
+//! Generates a large, realistic synthetic `mysqldump` dump (classicmodels
+//! schema + `user` table) for testing sosie at scale.
 //!
 //! ```text
 //! cargo run --release --example gen_dump -- --size 1G --out fixtures/big/big.sql
 //! sosie transform --from fixtures/big/big.sql --config sosie.yaml --out /dev/null
 //! ```
 //!
-//! Le contenu est déterministe pour une `--seed` donnée. Les données sont
-//! variées (accents, apostrophes échappées, `NULL`, JSON, retours à la ligne),
-//! les clés étrangères sont cohérentes et `user.email` est unique.
+//! Output is deterministic for a given `--seed`. Data is varied (accents,
+//! escaped quotes, `NULL`, JSON, newlines), foreign keys are consistent and
+//! `user.email` is unique.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -23,13 +23,13 @@ use rand_chacha::ChaCha8Rng;
 #[derive(Parser, Debug)]
 #[command(about = "Génère un gros dump mysqldump synthétique pour tester sosie.")]
 struct Args {
-    /// Taille cible du fichier : `500M`, `1G`, `2G`… (approximative, ±2 %).
+    /// Target file size: `500M`, `1G`, `2G`… (approximate, ±2%).
     #[arg(long, default_value = "1G")]
     size: String,
-    /// Fichier de sortie.
+    /// Output file.
     #[arg(long, default_value = "fixtures/big/big.sql")]
     out: PathBuf,
-    /// Graine du générateur (même graine = même dump).
+    /// Generator seed (same seed = same dump).
     #[arg(long, default_value_t = 42)]
     seed: u64,
 }
@@ -49,10 +49,10 @@ fn parse_size(s: &str) -> Result<u64> {
     Ok((n * mult as f64) as u64)
 }
 
-/// Taille max d'un `INSERT` étendu, comme `mysqldump --net-buffer-length`.
+/// Maximum size of an extended `INSERT`, as with `mysqldump --net-buffer-length`.
 const INSERT_MAX_BYTES: usize = 1 << 20;
 
-// --- Vocabulaire ---------------------------------------------------------
+// --- Vocabulary ----------------------------------------------------------
 
 const FIRST_NAMES: &[&str] = &[
     "Jean",
@@ -352,7 +352,7 @@ fn pick<T: Copy>(rng: &mut Rng, items: &[T]) -> T {
     *items.choose(rng).expect("liste non vide")
 }
 
-/// Ajoute une chaîne SQL `'…'` échappée à la façon de mysqldump.
+/// Appends an SQL string `'…'`, escaped the way mysqldump does.
 fn push_str(buf: &mut Vec<u8>, s: &str) {
     buf.push(b'\'');
     for &b in s.as_bytes() {
@@ -460,8 +460,8 @@ fn slug(s: &str) -> String {
         .collect()
 }
 
-/// Code produit du i-ème produit, ex. `S18_1042` (déterministe : partagé
-/// entre `products` et `orderdetails`).
+/// Product code of the i-th product, e.g. `S18_1042` (deterministic: shared
+/// by `products` and `orderdetails`).
 fn product_code(i: u64) -> String {
     format!("S{}_{}", 10 + i % 90, 1000 + i)
 }
@@ -481,9 +481,9 @@ fn bcrypt_like(rng: &mut Rng) -> String {
     format!("$2y$13${body}")
 }
 
-// --- Écriture du dump -----------------------------------------------------
+// --- Dump writing ---------------------------------------------------------
 
-/// Compte les octets sans les écrire (calibration).
+/// Counts bytes without writing them (calibration).
 struct CountingWriter(u64);
 
 impl Write for CountingWriter {
@@ -496,7 +496,7 @@ impl Write for CountingWriter {
     }
 }
 
-/// Nombre de lignes par table pour un facteur d'échelle donné.
+/// Row count per table for a given scale factor.
 #[derive(Debug, Clone, Copy)]
 struct Counts {
     customers: u64,
@@ -597,7 +597,7 @@ impl<W: Write> Dump<W> {
         Ok(())
     }
 
-    /// Écrit `n` lignes produites par `row`, en `INSERT` étendus d'environ 1 Mio.
+    /// Writes `n` rows produced by `row` as extended `INSERT`s of about 1 MiB.
     fn rows(
         &mut self,
         table: &str,
@@ -889,8 +889,8 @@ impl<W: Write> Dump<W> {
              \x20 CONSTRAINT `orderdetails_ibfk_1` FOREIGN KEY (`orderNumber`) REFERENCES `orders` (`orderNumber`),\n\
              \x20 CONSTRAINT `orderdetails_ibfk_2` FOREIGN KEY (`productCode`) REFERENCES `products` (`productCode`)",
         )?;
-        // Chaque commande a `max_lines_per_order` lignes, sur des produits
-        // distincts (clé primaire composite) et existants (clé étrangère).
+        // Each order has `max_lines_per_order` lines, on distinct (composite
+        // primary key) and existing (foreign key) products.
         let lines = c.orders * c.max_lines_per_order;
         self.rows("orderdetails", lines, |rng, i, b| {
             let order = i / c.max_lines_per_order;
@@ -1012,7 +1012,7 @@ fn generate<W: Write>(out: W, seed: u64, scale: u64) -> Result<()> {
     dump.write_all_tables()
 }
 
-/// Taille produite pour un facteur d'échelle, sans rien écrire.
+/// Output size for a scale factor, without writing anything.
 fn measure(seed: u64, scale: u64) -> Result<u64> {
     let mut counter = CountingWriter(0);
     generate(&mut counter, seed, scale)?;
@@ -1023,7 +1023,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let target = parse_size(&args.size)?;
 
-    // Calibration : la taille est affine en `scale` (y = a + b·scale).
+    // Calibration: size is affine in `scale` (y = a + b·scale).
     let (s1, s2) = (2_000u64, 4_000u64);
     let (y1, y2) = (measure(args.seed, s1)?, measure(args.seed, s2)?);
     let per_unit = (y2 - y1) as f64 / (s2 - s1) as f64;

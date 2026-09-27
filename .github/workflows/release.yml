@@ -1,7 +1,7 @@
 name: Release
 
-# Se déclenche sur un tag de version poussé (ex: v0.1.0), y compris via le
-# mirroring depuis GitLab (à condition que le mirroir GitLab pousse aussi les tags).
+# Triggered by a pushed version tag (e.g. v0.1.0), including through GitLab
+# mirroring (provided the GitLab mirror also pushes tags).
 on:
   push:
     tags:

@@ -1,4 +1,4 @@
-//! Parseur/writer pour le format produit par `mysqldump`.
+//! Parser/writer for the `mysqldump` output format.
 
 use std::borrow::Cow;
 use std::io::{Read, Write};
@@ -7,14 +7,14 @@ use anyhow::{Result, bail};
 
 use crate::dump::{Column, DumpParser, DumpWriter, Event, SqlType, Table, Value};
 
-/// Taille du buffer de lecture physique sur la source.
+/// Physical read buffer size on the source.
 const READ_CHUNK: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
-// 2a. Découpage du flux en instructions SQL complètes.
+// 2a. Splitting the stream into complete SQL statements.
 // ---------------------------------------------------------------------------
 
-/// État du scanner de limites d'instructions.
+/// Statement boundary scanner state.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScanState {
     Normal,
@@ -24,10 +24,10 @@ enum ScanState {
     DoubleQuoted,
 }
 
-/// Curseur de scan reprenable : où en est [`find_statement_end`] dans le
-/// buffer, pour ne jamais rescanner les octets déjà vus quand une instruction
-/// arrive en plusieurs lectures (sans lui, une instruction de 1 Mio lue par
-/// blocs de 64 Kio serait parcourue ~136 fois au lieu d'une).
+/// Resumable scan cursor: tracks [`find_statement_end`]'s progress in the
+/// buffer so bytes already seen are never rescanned when a statement spans
+/// several reads (otherwise a 1 MiB statement read in 64 KiB chunks would be
+/// scanned ~136 times instead of once).
 #[derive(Clone, Copy)]
 struct ScanCursor {
     state: ScanState,
@@ -41,32 +41,29 @@ impl ScanCursor {
     };
 }
 
-/// Cherche la fin de la prochaine instruction SQL dans `buf` (à partir de l'indice 0).
+/// Finds the end of the next SQL statement in `buf` (starting at index 0).
 ///
-/// Une instruction se termine par un `;` immédiatement suivi d'une fin de ligne
-/// (`\n` ou `\r\n`), en dehors de toute chaîne (`'…'`, `"…"`) ou de tout
-/// commentaire (`-- …`, `/* … */`, y compris les commentaires versionnés
-/// `/*!40101 … */` qui suivent la même syntaxe).
+/// A statement ends with a `;` immediately followed by a line ending (`\n` or
+/// `\r\n`), outside any string (`'…'`, `"…"`) or comment (`-- …`, `/* … */`,
+/// including versioned `/*!40101 … */` comments, which share that syntax).
 ///
-/// Retourne l'indice juste après la fin de ligne qui suit le `;` terminal — le
-/// saut de ligne fait partie de l'instruction retournée, pour que deux
-/// instructions consécutives se recollent sans rien ajouter ni perdre. `eof`
-/// indique qu'aucun octet supplémentaire ne viendra : la fin du buffer compte
-/// alors aussi comme fin d'instruction (dernière ligne sans retour à la ligne).
-/// `None` signifie qu'il faut lire plus de données pour trancher ; `cursor`
-/// mémorise alors l'avancement, et l'appel suivant (même `buf`, allongé)
-/// reprend là où celui-ci s'est arrêté. Il doit valoir [`ScanCursor::START`]
-/// au premier appel sur une nouvelle instruction.
+/// Returns the index just past the line ending that follows the final `;`. The
+/// newline belongs to the returned statement, so consecutive statements
+/// concatenate back without adding or losing anything. `eof` means no more
+/// bytes will arrive: the end of the buffer then also ends a statement (last
+/// line without a newline). `None` means more data is needed; `cursor` then
+/// records progress, and the next call (same `buf`, extended) resumes from
+/// there. It must be [`ScanCursor::START`] on the first call for a new
+/// statement.
 fn find_statement_end(buf: &[u8], eof: bool, cursor: &mut ScanCursor) -> Option<usize> {
-    // Cas particulier : une instruction qui commence (après d'éventuelles
-    // lignes blanches — `mysqldump` sépare ses sections ainsi) par un
-    // commentaire de fin de ligne (`-- …`). `mysqldump` en met toujours un
-    // seul par ligne, souvent collé sans `;` à ce qui suit (ex. juste avant
-    // un `INSERT INTO`) — sans ce cas, un tel commentaire se retrouverait
-    // fusionné dans l'instruction suivante, qui ne serait alors plus
-    // reconnue comme `CREATE TABLE` / `INSERT INTO`. Byte pour byte ça ne
-    // changerait rien (un `Raw` fusionné se réécrit à l'identique), mais on
-    // perdrait la structuration.
+    // Special case: a statement that starts (after optional blank lines, which
+    // `mysqldump` uses to separate sections) with a line comment (`-- …`).
+    // `mysqldump` always emits one per line, often directly followed by the next
+    // statement without a `;` (e.g. right before an `INSERT INTO`). Without this
+    // case, such a comment would be merged into the next statement, which would
+    // then no longer be recognized as `CREATE TABLE` / `INSERT INTO`. The output
+    // would be byte-identical (a merged `Raw` is rewritten verbatim), but the
+    // structure would be lost.
     if cursor.pos == 0 {
         let after_blank_lines = {
             let mut i = 0;
@@ -76,7 +73,7 @@ fn find_statement_end(buf: &[u8], eof: bool, cursor: &mut ScanCursor) -> Option<
             i
         };
         if !eof && buf.len() < after_blank_lines + 2 {
-            // Pas encore de quoi savoir si ça commence par `--`.
+            // Not enough data yet to tell whether it starts with `--`.
             return None;
         }
         if buf[after_blank_lines..].starts_with(b"--") {
@@ -91,10 +88,9 @@ fn find_statement_end(buf: &[u8], eof: bool, cursor: &mut ScanCursor) -> Option<
     let mut state = cursor.state;
     let mut i = cursor.pos;
     while i < buf.len() {
-        // Le scan regarde un octet en avant (`--`, `/*`, `*/`, `''`, `\'`,
-        // `;\n`) : tant que le flux n'est pas fini, on s'arrête avant
-        // d'entamer un octet dont le suivant n'est pas encore lu. Seul `;\r`
-        // a besoin d'en voir deux (cf. ci-dessous).
+        // The scan looks one byte ahead (`--`, `/*`, `*/`, `''`, `\'`, `;\n`):
+        // until the stream ends, stop before a byte whose successor hasn't been
+        // read yet. Only `;\r` needs two (see below).
         if !eof && i + 1 >= buf.len() {
             break;
         }
@@ -105,7 +101,7 @@ fn find_statement_end(buf: &[u8], eof: bool, cursor: &mut ScanCursor) -> Option<
                     return Some(line_end_len(buf, i + 1) + i + 1);
                 }
                 b';' if !eof && buf.get(i + 1) == Some(&b'\r') && i + 2 >= buf.len() => {
-                    // `;\r` en fin de buffer : `\n` peut suivre, on attend.
+                    // `;\r` at the end of the buffer: `\n` may follow, wait.
                     break;
                 }
                 b'\'' => state = ScanState::SingleQuoted,
@@ -160,12 +156,12 @@ fn find_statement_end(buf: &[u8], eof: bool, cursor: &mut ScanCursor) -> Option<
     None
 }
 
-/// `true` si `buf[i..]` commence par une fin de ligne (`\n` ou `\r\n`).
+/// `true` if `buf[i..]` starts with a line ending (`\n` or `\r\n`).
 fn is_line_end(buf: &[u8], i: usize) -> bool {
     line_end_len(buf, i) > 0
 }
 
-/// Longueur de la fin de ligne commençant en `i` (0, 1 pour `\n`, 2 pour `\r\n`).
+/// Length of the line ending starting at `i` (0, 1 for `\n`, 2 for `\r\n`).
 fn line_end_len(buf: &[u8], i: usize) -> usize {
     match (buf.get(i), buf.get(i + 1)) {
         (Some(b'\r'), Some(b'\n')) => 2,
@@ -175,7 +171,7 @@ fn line_end_len(buf: &[u8], i: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Petits outils de scan partagés par 2b et 2c.
+// Small scanning helpers shared by 2b and 2c.
 // ---------------------------------------------------------------------------
 
 fn skip_ws(buf: &[u8], mut i: usize) -> usize {
@@ -189,8 +185,8 @@ fn starts_with_ci(buf: &[u8], word: &[u8]) -> bool {
     buf.len() >= word.len() && buf[..word.len()].eq_ignore_ascii_case(word)
 }
 
-/// Consomme un mot-clé ASCII insensible à la casse en `i`, entouré (avant)
-/// d'espaces déjà consommés par l'appelant. Retourne la position juste après.
+/// Consumes a case-insensitive ASCII keyword at `i` (leading whitespace
+/// already consumed by the caller). Returns the position just after it.
 fn expect_keyword(buf: &[u8], i: usize, word: &[u8]) -> Result<usize> {
     if starts_with_ci(&buf[i..], word) {
         Ok(i + word.len())
@@ -203,9 +199,9 @@ fn expect_keyword(buf: &[u8], i: usize, word: &[u8]) -> Result<usize> {
     }
 }
 
-/// Parse un identifiant entre backticks (`` `nom` ``, doublement du backtick
-/// pour en échapper un littéral). `buf[i]` doit être un backtick.
-/// Retourne le nom désescapé et la position juste après le backtick fermant.
+/// Parses a backtick-quoted identifier (`` `name` ``; a doubled backtick
+/// escapes a literal one). `buf[i]` must be a backtick.
+/// Returns the unescaped name and the position just after the closing backtick.
 fn parse_backtick_ident(buf: &[u8], i: usize) -> Result<(String, usize)> {
     if buf.get(i) != Some(&b'`') {
         bail!("identifiant entre backticks attendu à la position {i}");
@@ -228,9 +224,9 @@ fn parse_backtick_ident(buf: &[u8], i: usize) -> Result<(String, usize)> {
     }
 }
 
-/// Parse un identifiant potentiellement qualifié (`` `schema`.`table` ``) et
-/// retourne le dernier segment (le nom propre de la table/colonne) avec la
-/// position juste après.
+/// Parses a possibly qualified identifier (`` `schema`.`table` ``) and
+/// returns its last segment (the table/column name) with the position just
+/// after it.
 fn parse_qualified_ident(buf: &[u8], i: usize) -> Result<(String, usize)> {
     let (mut name, mut j) = parse_backtick_ident(buf, i)?;
     if buf.get(j) == Some(&b'.') && buf.get(j + 1) == Some(&b'`') {
@@ -241,9 +237,9 @@ fn parse_qualified_ident(buf: &[u8], i: usize) -> Result<(String, usize)> {
     Ok((name, j))
 }
 
-/// Trouve l'index de la parenthèse fermante correspondant à `buf[open]` (qui
-/// doit être `(`), en ignorant les parenthèses et virgules à l'intérieur des
-/// chaînes `'…'` / `"…"` et en gérant l'imbrication (`varchar(180)`, `enum(...)`).
+/// Finds the index of the closing parenthesis matching `buf[open]` (which
+/// must be `(`), handling nesting (`varchar(180)`, `enum(...)`) and ignoring
+/// parentheses and commas inside `'…'` / `"…"` strings.
 fn find_matching_paren(buf: &[u8], open: usize) -> Result<usize> {
     if buf.get(open) != Some(&b'(') {
         bail!("'(' attendu à la position {open}");
@@ -300,9 +296,9 @@ fn find_matching_paren(buf: &[u8], open: usize) -> Result<usize> {
     bail!("parenthèse fermante manquante")
 }
 
-/// Découpe `buf` en segments séparés par des virgules de premier niveau
-/// (hors chaînes et hors parenthèses imbriquées). Retourne des bornes
-/// `(start, end)` relatives à `buf`, avec les espaces autour déjà retirés.
+/// Splits `buf` on top-level commas (outside strings and nested
+/// parentheses). Returns `(start, end)` bounds relative to `buf`, with
+/// surrounding whitespace trimmed.
 fn split_top_level_commas(buf: &[u8]) -> Vec<(usize, usize)> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum St {
@@ -392,7 +388,7 @@ fn sql_type_from_keyword(word: &str) -> SqlType {
     }
 }
 
-/// Parse une définition de colonne (commence par un identifiant entre backticks).
+/// Parses a column definition (starts with a backtick-quoted identifier).
 fn parse_column_def(def: &[u8]) -> Result<Column> {
     let (name, mut i) = parse_backtick_ident(def, 0)?;
     i = skip_ws(def, i);
@@ -430,14 +426,13 @@ fn parse_column_def(def: &[u8]) -> Result<Column> {
         nullable,
         max_len,
         generated,
-        unique: false, // renseigné après coup par `parse_create_table`, une fois les clés lues.
+        unique: false, // set later by `parse_create_table`, once keys are read.
     })
 }
 
-/// Si `def` est une contrainte `PRIMARY KEY (...)` ou `UNIQUE [KEY|INDEX]
-/// [\`nom\`] (...)` portant sur une seule colonne, retourne le nom de cette
-/// colonne. Les clés composites (plusieurs colonnes) ne rendent aucune
-/// colonne unique à elle seule : elles sont ignorées.
+/// If `def` is a `PRIMARY KEY (...)` or `UNIQUE [KEY|INDEX]
+/// [\`name\`] (...)` constraint on a single column, returns that column's
+/// name. Composite keys make no single column unique and are ignored.
 fn single_column_unique_constraint(def: &[u8]) -> Option<String> {
     let is_primary = starts_with_ci(def, b"PRIMARY KEY");
     let is_unique = starts_with_ci(def, b"UNIQUE");
@@ -468,7 +463,7 @@ fn contains_word_ci(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
-/// Parse une instruction `CREATE TABLE` complète.
+/// Parses a complete `CREATE TABLE` statement.
 fn parse_create_table(stmt: &[u8]) -> Result<Table> {
     let mut i = expect_keyword(stmt, 0, b"CREATE")?;
     i = skip_ws(stmt, i);
@@ -503,7 +498,7 @@ fn parse_create_table(stmt: &[u8]) -> Result<Table> {
         {
             col.unique = true;
         }
-        // KEY / CONSTRAINT (CHECK) / FULLTEXT / clés composites : ignorés.
+        // KEY / CONSTRAINT (CHECK) / FULLTEXT / composite keys: ignored.
     }
 
     Ok(Table {
@@ -518,11 +513,11 @@ fn parse_create_table(stmt: &[u8]) -> Result<Table> {
 // 2c. `INSERT INTO`
 // ---------------------------------------------------------------------------
 
-/// Métadonnées extraites du préfixe d'un `INSERT INTO`, avant la liste des tuples.
+/// Metadata extracted from an `INSERT INTO` prefix, before the tuple list.
 struct InsertHead {
     table: String,
     columns: Option<Vec<String>>,
-    /// Octets `stmt[0..prefix_end]`, à réécrire tels quels par le writer.
+    /// Bytes `stmt[0..prefix_end]`, rewritten verbatim by the writer.
     prefix_end: usize,
 }
 
@@ -560,8 +555,8 @@ fn parse_insert_head(stmt: &[u8]) -> Result<InsertHead> {
     })
 }
 
-/// Trouve les bornes `(start, end)` (contenu entre les parenthèses, exclu) de
-/// chaque tuple `(...)` d'une liste `VALUES (...),(...),...;`.
+/// Finds the `(start, end)` bounds (content between the parentheses) of
+/// each `(...)` tuple in a `VALUES (...),(...),...;` list.
 fn find_value_tuples(stmt: &[u8], mut i: usize) -> Result<Vec<(usize, usize)>> {
     let mut tuples = Vec::new();
     loop {
@@ -581,7 +576,7 @@ fn find_value_tuples(stmt: &[u8], mut i: usize) -> Result<Vec<(usize, usize)>> {
     Ok(tuples)
 }
 
-/// Parse le contenu d'un tuple (entre parenthèses, hors parenthèses) en valeurs.
+/// Parses a tuple's content (inside the parentheses) into values.
 fn parse_row(tuple: &[u8]) -> Result<Vec<Value<'_>>> {
     split_top_level_commas(tuple)
         .into_iter()
@@ -602,9 +597,9 @@ fn parse_value(token: &[u8]) -> Result<Value<'_>> {
     Ok(Value::Raw(token))
 }
 
-/// Désescape le contenu d'une chaîne SQL entre quotes simples : gère les
-/// séquences `\'`, `\"`, `\\`, `\n`, `\r`, `\t`, `\0`, `\Z`, `\b`, ainsi que
-/// l'apostrophe doublée `''`. Ne copie que si une séquence a été trouvée.
+/// Unescapes the content of a single-quoted SQL string: handles `\'`, `\"`,
+/// `\\`, `\n`, `\r`, `\t`, `\0`, `\Z`, `\b` and the doubled quote `''`.
+/// Only copies when an escape sequence is found.
 fn unescape_sql_string(inner: &[u8]) -> Cow<'_, [u8]> {
     if !inner.contains(&b'\\') && !inner.windows(2).any(|w| w == b"''") {
         return Cow::Borrowed(inner);
@@ -621,7 +616,7 @@ fn unescape_sql_string(inner: &[u8]) -> Cow<'_, [u8]> {
                     b'r' => b'\r',
                     b't' => b'\t',
                     b'Z' => 0x1A,
-                    other => other, // \', \", \\ et tout le reste : l'octet échappé lui-même.
+                    other => other, // \', \", \\ and anything else: the escaped byte itself.
                 });
                 i += 2;
             }
@@ -638,8 +633,8 @@ fn unescape_sql_string(inner: &[u8]) -> Cow<'_, [u8]> {
     Cow::Owned(out)
 }
 
-/// Ré-échappe une chaîne pour l'écrire entre quotes simples, avec exactement
-/// les règles utilisées par `mysqldump` en sortie.
+/// Re-escapes a string for single-quoted output, using exactly the rules
+/// `mysqldump` applies.
 fn escape_sql_string(bytes: &[u8], out: &mut Vec<u8>) {
     for &b in bytes {
         match b {
@@ -658,32 +653,31 @@ fn escape_sql_string(bytes: &[u8], out: &mut Vec<u8>) {
 }
 
 // ---------------------------------------------------------------------------
-// Le parseur complet
+// Full parser
 // ---------------------------------------------------------------------------
 
 struct PendingInsert {
-    /// Position du premier `(` de la liste `VALUES` dans l'instruction.
+    /// Position of the first `(` of the `VALUES` list in the statement.
     values_start: usize,
-    /// Bornes des tuples, calculées paresseusement à la première `Row` :
-    /// une table skippée par l'appelant (cf. [`DumpParser::skip_rows`]) n'est
-    /// ainsi jamais scannée au-delà de son préfixe.
+    /// Tuple bounds, computed lazily on the first `Row`: a table skipped by the
+    /// caller (see [`DumpParser::skip_rows`]) is never scanned past its prefix.
     tuples: Vec<(usize, usize)>,
     scanned: bool,
     next: usize,
 }
 
-/// Parseur de dump `mysqldump`, lu depuis n'importe quelle source [`Read`].
+/// `mysqldump` dump parser, reading from any [`Read`] source.
 pub struct MysqlParser<R> {
     reader: R,
-    /// Octets lus mais pas encore renvoyés en événement.
+    /// Bytes read but not yet returned as events.
     buf: Vec<u8>,
-    /// Octets de `buf` déjà consommés (renvoyés lors d'un appel précédent).
+    /// Bytes of `buf` already consumed (returned by a previous call).
     start: usize,
-    /// `true` une fois que `reader` a renvoyé 0 octet.
+    /// `true` once `reader` has returned 0 bytes.
     eof: bool,
-    /// Avancement du scan de fin d'instruction sur `buf[..]`, entre deux lectures.
+    /// End-of-statement scan progress over `buf[..]`, kept across reads.
     cursor: ScanCursor,
-    /// `Some` tant qu'on égrène les `Row` d'un `INSERT` en cours.
+    /// `Some` while yielding the `Row`s of the current `INSERT`.
     pending_insert: Option<PendingInsert>,
 }
 
@@ -699,8 +693,8 @@ impl<R: Read> MysqlParser<R> {
         }
     }
 
-    /// Retourne la prochaine instruction complète (avec son `;` et son saut
-    /// de ligne final), ou `None` en fin de flux.
+    /// Returns the next complete statement (including its `;` and trailing
+    /// newline), or `None` at end of stream.
     fn next_statement(&mut self) -> Result<Option<&[u8]>> {
         loop {
             if self.start > 0 {
@@ -718,8 +712,8 @@ impl<R: Read> MysqlParser<R> {
                 if self.buf.is_empty() {
                     return Ok(None);
                 }
-                // Reste de données sans `;` terminal (fichier tronqué ou
-                // dernière ligne sans ponctuation) : on le rend tel quel.
+                // Leftover data without a final `;` (truncated file or unterminated last
+                // line): returned as is.
                 self.start = self.buf.len();
                 return Ok(Some(&self.buf[..]));
             }
@@ -740,8 +734,8 @@ impl<R: Read> MysqlParser<R> {
             .as_mut()
             .expect("pending_insert is Some");
         if !pending.scanned {
-            // L'instruction courante est `buf[..start]` (pas encore drainée :
-            // `next_statement` ne l'est qu'une fois `pending_insert` vidé).
+            // The current statement is `buf[..start]` (not drained yet:
+            // `next_statement` drains it only once `pending_insert` is empty).
             pending.tuples = find_value_tuples(&self.buf[..self.start], pending.values_start)?;
             pending.scanned = true;
         }
@@ -757,9 +751,9 @@ impl<R: Read> MysqlParser<R> {
     }
 }
 
-/// Résultat, entièrement possédé, de la classification d'une instruction —
-/// pour ne conserver aucun emprunt de `self.buf` une fois la décision prise
-/// (le writer, lui, a besoin d'un nouvel emprunt frais pour l'`Event` renvoyé).
+/// Fully owned result of classifying a statement, so that no borrow of
+/// `self.buf` outlives the decision (the writer needs a fresh borrow for the
+/// returned `Event`).
 enum Decision {
     Raw,
     Table(Table),
@@ -785,13 +779,11 @@ impl<R: Read> DumpParser for MysqlParser<R> {
                 Some(s) => s,
                 None => return Ok(None),
             };
-            // Une instruction peut commencer par des lignes blanches (les
-            // dumps ne sont pas tous aussi disciplinés que `mysqldump`, qui
-            // sépare toujours ses sections par un commentaire `--`) : sans ce
-            // décalage, `starts_with_ci` échoue sur le `CREATE TABLE` /
-            // `INSERT INTO` réel et l'instruction est silencieusement prise
-            // pour du `Raw` — la table ou les lignes disparaissent du scan
-            // sans la moindre erreur.
+            // A statement may start with blank lines (not every dump is as tidy as
+            // `mysqldump`, which always separates sections with a `--` comment).
+            // Without this offset, `starts_with_ci` misses the actual `CREATE TABLE` /
+            // `INSERT INTO` and the statement is silently treated as `Raw`: the table
+            // or its rows vanish from the scan without any error.
             let leading = skip_ws(stmt, 0);
             let body = &stmt[leading..];
             let decision = if starts_with_ci(body, b"CREATE TABLE") {
@@ -833,11 +825,11 @@ impl<R: Read> DumpParser for MysqlParser<R> {
     }
 }
 
-/// Writer symétrique de [`MysqlParser`] : réécrit un flux d'[`Event`] au
-/// format `mysqldump`.
+/// Counterpart writer of [`MysqlParser`]: rewrites an [`Event`] stream in
+/// `mysqldump` format.
 pub struct MysqlWriter<W> {
     writer: W,
-    /// `true` si la prochaine `Row` est la première depuis le dernier `RowsBegin`.
+    /// `true` if the next `Row` is the first since the last `RowsBegin`.
     first_row: bool,
 }
 
@@ -903,8 +895,8 @@ mod tests {
         find_statement_end(input.as_bytes(), eof, &mut cursor)
     }
 
-    /// Lecteur qui ne rend jamais plus de `n` octets par appel, pour forcer
-    /// une instruction à arriver en beaucoup de morceaux.
+    /// Reader that never returns more than `n` bytes per call, forcing a
+    /// statement to arrive in many chunks.
     struct Dribble<'a> {
         data: &'a [u8],
         n: usize,
@@ -931,9 +923,8 @@ mod tests {
 
     #[test]
     fn resumable_scan_splits_statements_identically_whatever_the_read_size() {
-        // Le scan de fin d'instruction reprend là où il s'était arrêté entre
-        // deux lectures : toute frontière de lecture (au milieu d'un `;\r\n`,
-        // d'un `\'`, d'un `--`, d'un `''`…) doit donner le même découpage.
+        // The end-of-statement scan resumes across reads: every read boundary
+        // (mid `;\r\n`, `\'`, `--`, `''`…) must yield the same split.
         for fixture in [
             &include_bytes!("../../fixtures/exemples/dumps/01_basic.sql")[..],
             &include_bytes!("../../fixtures/exemples/dumps/02_parser_edge_cases.sql")[..],
@@ -997,10 +988,9 @@ mod tests {
 
     #[test]
     fn semicolon_inside_line_comment_is_ignored() {
-        // Un commentaire `-- …` en tête d'instruction est désormais une
-        // instruction à lui seul (voir le cas particulier en tête de
-        // `find_statement_end`) : le `;` qu'il contient ne le termine pas
-        // prématurément, mais ce n'est plus fusionné avec la ligne suivante.
+        // A leading `-- …` comment is now a statement on its own (see the special
+        // case at the top of `find_statement_end`): its `;` does not end it early,
+        // and it is no longer merged with the next line.
         assert_eq!(ends("-- a; b\nSELECT 1;\n", false), Some(8));
     }
 
@@ -1017,7 +1007,7 @@ mod tests {
     #[test]
     fn incomplete_statement_needs_more_data() {
         assert_eq!(ends("SELECT 1", false), None);
-        assert_eq!(ends("SELECT 1;", false), None); // pas encore de fin de ligne
+        assert_eq!(ends("SELECT 1;", false), None); // no line ending yet
     }
 
     #[test]
@@ -1074,14 +1064,13 @@ mod tests {
         let input: &[u8] = include_bytes!("../../fixtures/exemples/dumps/02_parser_edge_cases.sql");
         let output = roundtrip(input);
 
-        // Limitation connue et acceptée : le désescapage transforme `''` (une
-        // apostrophe échappée façon SQL standard) et `\'` (façon mysqldump)
-        // en la même valeur logique ; en écriture on ré-échappe toujours à la
-        // façon mysqldump (`\'`), la seule que `mysqldump` produit réellement.
-        // Le cas 5 de cette fixture utilise volontairement `''` pour tester
-        // que le *parseur* la reconnaît ; on normalise cette seule occurrence
-        // avant de comparer, plutôt que de complexifier le writer pour un
-        // style d'échappement que `mysqldump` ne génère jamais lui-même.
+        // Known and accepted limitation: unescaping maps `''` (standard SQL
+        // escaping) and `\'` (mysqldump style) to the same logical value; the writer
+        // always re-escapes mysqldump-style (`\'`), the only form `mysqldump`
+        // actually produces. Case 5 of this fixture deliberately uses `''` to test
+        // that the *parser* accepts it; that single occurrence is normalized before
+        // comparing, rather than complicating the writer for a style `mysqldump`
+        // never emits.
         let expected =
             String::from_utf8_lossy(input).replace("VALUES (1,''x'')", "VALUES (1,\\'x\\')");
         let expected = expected.as_bytes();
@@ -1127,7 +1116,7 @@ mod tests {
             .filter(|c| c.unique)
             .map(|c| c.name.as_str())
             .collect();
-        // `id` (PRIMARY KEY) et `email` (UNIQUE KEY) sont mono-colonnes.
+        // `id` (PRIMARY KEY) and `email` (UNIQUE KEY) are single-column.
         assert!(unique_cols.contains(&"id"));
         assert!(unique_cols.contains(&"email"));
         assert!(!unique_cols.contains(&"first_name"));
@@ -1143,7 +1132,7 @@ mod tests {
             let bytes: Vec<u8> = (0..len).map(|_| rng.random::<u8>()).collect();
             let mut escaped = Vec::new();
             escape_sql_string(&bytes, &mut escaped);
-            // L'échappé ne doit plus contenir de quote ni de backslash nus.
+            // The escaped output must not contain bare quotes or backslashes.
             assert!(!escaped.contains(&b'\'') || escaped.windows(2).all(|w| w != b"'"));
             let unescaped = unescape_sql_string(&escaped);
             assert_eq!(unescaped.as_ref(), bytes.as_slice());

@@ -1,4 +1,4 @@
-//! Moteur de transformation : applique la config à un flux d'événements.
+//! Transformation engine: applies the config to an event stream.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -27,26 +27,25 @@ struct TablePlan {
     schema_order: Vec<String>,
     column_action: HashMap<String, Action>,
     max_len: HashMap<String, Option<u32>>,
-    /// Colonnes couvertes par une contrainte `PRIMARY KEY`/`UNIQUE KEY` mono-colonne :
-    /// leurs valeurs générées par preset ne doivent jamais entrer en collision.
+    /// Columns covered by a single-column `PRIMARY KEY`/`UNIQUE KEY` constraint:
+    /// their preset-generated values must never collide.
     unique_columns: HashSet<String>,
-    /// Par colonne unique : empreinte de la valeur d'origine -> numéro de
-    /// tentative retenu (pour qu'une même entrée redonne toujours la même
-    /// sortie, cf. `resolve_unique_preset_value`).
+    /// Per unique column: fingerprint of the original value -> selected attempt
+    /// number (so the same input always yields the same output, see
+    /// `resolve_unique_preset_value`).
     dedup_by_input: HashMap<String, HashMap<u128, u32>>,
-    /// Par colonne unique : empreintes (64 bits, cf. [`short_fingerprint`])
-    /// des sorties déjà attribuées, pour détecter une collision entre deux
-    /// entrées différentes.
+    /// Per unique column: fingerprints (64-bit, see [`short_fingerprint`]) of
+    /// outputs already assigned, to detect collisions between distinct inputs.
     used_outputs: HashMap<String, HashSet<u64>>,
 }
 
-/// Empreinte 128 bits d'une valeur, pour l'état de déduplication des colonnes
-/// `UNIQUE` : on ne conserve jamais les valeurs elles-mêmes (ni d'origine, ni
-/// générées), seulement ~50 octets par entrée au lieu de ~300.
+/// 128-bit fingerprint of a value, for the dedup state of `UNIQUE` columns:
+/// the values themselves (original or generated) are never stored, only ~50
+/// bytes per entry instead of ~300.
 ///
-/// Deux SipHash-1-3 indépendants (entrée nue / entrée préfixée). Une collision
-/// accidentelle est de l'ordre de 2^-128 ; et si elle survenait, l'effet
-/// serait au pire une variante de sortie tirée pour rien.
+/// Two independent SipHash-1-3 hashes (raw input / prefixed input). An
+/// accidental collision is on the order of 2^-128; should one occur, the
+/// worst case is a needlessly drawn output variant.
 fn fingerprint(bytes: &[u8]) -> u128 {
     let mut b = DefaultHasher::new();
     0xFFu8.hash(&mut b);
@@ -54,20 +53,20 @@ fn fingerprint(bytes: &[u8]) -> u128 {
     ((short_fingerprint(bytes) as u128) << 64) | b.finish() as u128
 }
 
-/// Empreinte 64 bits, suffisante pour l'ensemble des sorties attribuées : un
-/// faux positif y coûte seulement une variante tirée pour rien (jamais un
-/// doublon), et l'ensemble tient en 8 octets par entrée.
+/// 64-bit fingerprint, sufficient for the set of assigned outputs: a false
+/// positive only costs a needless variant (never a duplicate), and the set
+/// takes 8 bytes per entry.
 fn short_fingerprint(bytes: &[u8]) -> u64 {
     let mut a = DefaultHasher::new();
     bytes.hash(&mut a);
     a.finish()
 }
 
-/// Dérive la clé HMAC à utiliser pour toute la transformation.
+/// Derives the HMAC key used for the whole transformation.
 ///
-/// En `anonymize`, une clé aléatoire de 32 octets, générée une fois au
-/// démarrage et jamais conservée. En `pseudonymize`, les octets de
-/// `$SOSIE_KEY` (déjà validée par `Config::load`).
+/// In `anonymize` mode, a random 32-byte key generated once at startup and
+/// never persisted. In `pseudonymize` mode, the bytes of `$SOSIE_KEY`
+/// (already validated by `Config::load`).
 pub fn resolve_key(config: &Config) -> Result<Vec<u8>> {
     match config.mode {
         Mode::Anonymize => Ok(rand::random::<[u8; 32]>().to_vec()),
@@ -95,9 +94,9 @@ fn build_table_plan(config: &Config, table: &DumpTable) -> Result<TablePlan> {
         let rule = rules.and_then(|m| m.get(&col.name));
         let action = match rule {
             Some(Rule::Keep) => Action::Keep,
-            // "Met NULL (ou chaîne vide si NOT NULL, détecté au schéma)" — un
-            // `NULL` littéral sur une colonne `NOT NULL` produirait un dump
-            // SQL invalide à l'import.
+            // "Set NULL (or empty string if NOT NULL, detected from the schema)": a
+            // literal `NULL` in a `NOT NULL` column would make the SQL dump fail on
+            // import.
             Some(Rule::Null) => {
                 if col.nullable {
                     Action::Null
@@ -110,8 +109,8 @@ fn build_table_plan(config: &Config, table: &DumpTable) -> Result<TablePlan> {
                 Action::Preset(presets::build(name, params)?, name.clone())
             }
             None => {
-                // Une colonne GENERATED n'apparaît jamais dans un INSERT
-                // (mysqldump l'omet) : impossible et inutile de la couvrir.
+                // GENERATED columns never appear in an INSERT (mysqldump omits them):
+                // they can't and needn't be covered.
                 if !skip
                     && !col.generated
                     && config.defaults.on_unclassified == OnUnclassified::Fail
@@ -160,22 +159,22 @@ fn truncate_to_chars(
     }
 }
 
-/// Nombre de secondes tentatives avant d'abandonner et de renvoyer quand même
-/// une valeur (ne devrait jamais être atteint en pratique : à ce stade
-/// l'espace de sortie du preset serait de toute façon proche de la saturation).
+/// Maximum number of retries before giving up and returning a value anyway
+/// (should never be reached in practice: the preset's output space would be
+/// near saturation by then).
 const MAX_DEDUP_ATTEMPTS: u32 = 1000;
 
-/// Calcule la sortie d'un preset pour une colonne `UNIQUE`, en garantissant
-/// qu'elle ne collisionne jamais avec une sortie déjà attribuée à une AUTRE
-/// valeur d'origine dans cette même colonne :
-/// - même entrée déjà vue -> on recalcule exactement la même sortie qu'avant
-///   (le numéro de tentative retenu suffit, le preset étant déterministe) ;
-/// - entrée nouvelle -> on calcule normalement, et seulement en cas de
-///   collision réelle avec une autre entrée on retire une variante (graine
-///   perturbée par un numéro de tentative) jusqu'à en trouver une libre.
+/// Computes a preset's output for a `UNIQUE` column, guaranteeing it never
+/// collides with an output already assigned to a DIFFERENT original value in
+/// the same column:
+/// - input already seen -> recompute exactly the same output (the stored
+///   attempt number is enough, since presets are deterministic);
+/// - new input -> compute normally, and only on an actual collision with
+///   another input, draw a variant (seed perturbed by an attempt number)
+///   until a free one is found.
 ///
-/// L'état ne contient que des empreintes (cf. [`fingerprint`]) : la mémoire
-/// reste bornée même avec des dizaines de millions de valeurs uniques.
+/// The state only holds fingerprints (see [`fingerprint`]): memory stays
+/// bounded even with tens of millions of unique values.
 #[allow(clippy::too_many_arguments)]
 fn resolve_unique_preset_value(
     preset: &dyn Preset,
@@ -207,8 +206,8 @@ fn resolve_unique_preset_value(
                     None => bytes,
                 })
             }
-            // Un preset appliqué à un `Str` doit renvoyer un `Str` ; s'il ne
-            // le fait pas, on n'a rien à dédupliquer.
+            // A preset applied to a `Str` must return a `Str`; otherwise there is
+            // nothing to dedup.
             Value::Raw(b) => {
                 let _ = b;
                 None
@@ -219,7 +218,7 @@ fn resolve_unique_preset_value(
 
     let input_fp = fingerprint(raw);
     if let Some(&attempt) = dedup_map.get(&input_fp) {
-        // Déjà comptée dans le rapport la première fois : rapport jetable.
+        // Already counted in the report the first time: throwaway report.
         let mut scratch = crate::report::ColumnReport::default();
         return compute(attempt, &mut scratch).unwrap_or_default();
     }
@@ -243,8 +242,8 @@ fn resolve_unique_preset_value(
     candidate
 }
 
-/// État de déduplication d'une colonne `UNIQUE` : (entrée -> sortie déjà
-/// attribuée, ensemble des sorties déjà attribuées).
+/// Dedup state of a `UNIQUE` column: (input -> assigned output, set of
+/// assigned outputs).
 type UniqueDedupState<'a> = (&'a mut HashMap<u128, u32>, &'a mut HashSet<u64>);
 
 #[allow(clippy::too_many_arguments)]
@@ -318,22 +317,22 @@ fn apply_action<'a>(
     }
 }
 
-/// Avancement de la transformation, remonté à l'appelant (affichage d'une
-/// barre de progression, journal…). Ne transporte jamais une valeur de donnée.
+/// Transformation progress reported to the caller (progress bar, log…).
+/// Never carries a data value.
 #[derive(Debug, Clone, Copy)]
 pub enum Progress<'a> {
-    /// Un `CREATE TABLE` vient d'être lu : on entre dans cette table.
+    /// A `CREATE TABLE` was just read: entering this table.
     Table(&'a str),
-    /// Nombre total de lignes émises depuis le début (envoyé par paquets de
-    /// [`PROGRESS_EVERY_ROWS`] et à chaque fin d'`INSERT`).
+    /// Total rows emitted so far (sent every [`PROGRESS_EVERY_ROWS`] rows and
+    /// at the end of each `INSERT`).
     Rows(u64),
 }
 
-/// Fréquence (en lignes) des notifications [`Progress::Rows`].
+/// Interval (in rows) between [`Progress::Rows`] notifications.
 pub const PROGRESS_EVERY_ROWS: u64 = 2_048;
 
-/// Exécute la transformation complète d'un dump `mysqldump`, du flux d'entrée
-/// vers le flux de sortie, en suivant `config`.
+/// Runs the full transformation of a `mysqldump` dump, from the input
+/// stream to the output stream, according to `config`.
 pub fn run<R: Read, W: Write>(
     config: &Config,
     reader: R,
@@ -343,7 +342,7 @@ pub fn run<R: Read, W: Write>(
     run_with_progress(config, reader, writer, report, |_| {})
 }
 
-/// Comme [`run`], en appelant `on_progress` au fil de l'eau.
+/// Like [`run`], calling `on_progress` along the way.
 pub fn run_with_progress<R: Read, W: Write, F: FnMut(Progress<'_>)>(
     config: &Config,
     reader: R,
@@ -380,7 +379,7 @@ pub fn run_with_progress<R: Read, W: Write, F: FnMut(Progress<'_>)>(
                     .with_context(|| format!("INSERT INTO {table} sans CREATE TABLE préalable"))?;
                 skipping = p.skip;
                 if skipping {
-                    // Ni écrite ni parsée : on saute directement à l'instruction suivante.
+                    // Neither written nor parsed: jump straight to the next statement.
                     parser.skip_rows();
                     continue;
                 }
@@ -395,9 +394,9 @@ pub fn run_with_progress<R: Read, W: Write, F: FnMut(Progress<'_>)>(
                 let mut transformed: Vec<Value> = Vec::with_capacity(values.len());
                 for (v, col_name) in values.iter().zip(current_order.iter()) {
                     let p = plan.as_mut().expect("Row sans RowsBegin");
-                    // Emprunts disjoints d'un même `&mut TablePlan` : `column_action`
-                    // (lu) d'un côté, `dedup_by_input`/`used_outputs` (mutés) de
-                    // l'autre — deux champs distincts, le compilateur les sépare.
+                    // Disjoint borrows of the same `&mut TablePlan`: `column_action` (read) on
+                    // one side, `dedup_by_input`/`used_outputs` (mutated) on the other. Distinct
+                    // fields, so the compiler splits the borrows.
                     let action = p.column_action.get(col_name).unwrap_or(&Action::Keep);
                     let max_len = p.max_len.get(col_name).copied().flatten();
                     let unique = if p.unique_columns.contains(col_name) {
@@ -499,9 +498,9 @@ mod tests {
         let text = String::from_utf8_lossy(&out1);
         assert!(!text.contains("jean.dupont@gmail.com"));
         assert!(text.contains("@example.org"));
-        // password toujours remplacé par la constante configurée.
+        // password is always replaced by the configured constant.
         assert!(text.contains("$2y$13$DEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVO"));
-        // audit_log est dans skip_tables : structure gardée, zéro ligne.
+        // audit_log is in skip_tables: structure kept, zero rows.
         assert!(text.contains("CREATE TABLE `audit_log`"));
         assert!(!text.contains("INSERT INTO `audit_log`"));
     }
@@ -520,8 +519,8 @@ mod tests {
 
     #[test]
     fn null_rule_on_a_not_null_column_produces_empty_string_not_literal_null() {
-        // `user.password` est `NOT NULL` dans le schéma : un `NULL` littéral
-        // produirait un dump invalide à l'import.
+        // `user.password` is `NOT NULL` in the schema: a literal `NULL` would
+        // produce a dump that fails on import.
         let input: &[u8] = include_bytes!("../../fixtures/exemples/dumps/01_basic.sql");
         let yaml = r#"
 version: 1
@@ -537,7 +536,7 @@ tables:
         let mut report = Report::new("anonymize");
         run(&cfg, input, &mut out, &mut report).unwrap();
         let text = String::from_utf8_lossy(&out);
-        // La colonne password (7e valeur) doit être une chaîne vide, jamais NULL.
+        // The password column (7th value) must be an empty string, never NULL.
         assert!(text.contains("1985-03-14',''"));
         assert!(!text.contains("1985-03-14',NULL"));
     }
@@ -560,9 +559,9 @@ tables:
     fn dedup_with_fallback_fills_a_small_output_pool_without_collision() {
         use rand::RngExt;
 
-        // Preset factice à espace de sortie minuscule (10 valeurs possibles),
-        // pour déclencher des collisions à coup sûr et vérifier que le repli
-        // les résout au lieu de laisser passer un doublon.
+        // Fake preset with a tiny output space (10 possible values), to force
+        // collisions and check that the fallback resolves them instead of letting
+        // a duplicate through.
         struct TinyPoolPreset;
         impl Preset for TinyPoolPreset {
             fn apply<'a>(
@@ -608,7 +607,7 @@ tables:
             "10 entrées distinctes doivent occuper les 10 sorties possibles du pool, sans collision"
         );
 
-        // Une entrée déjà vue doit toujours redonner exactement la même sortie.
+        // A previously seen input must always yield exactly the same output.
         let again = resolve_unique_preset_value(
             &TinyPoolPreset,
             "tiny",
