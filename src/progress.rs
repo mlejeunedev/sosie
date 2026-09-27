@@ -1,9 +1,9 @@
-//! Barre de progression sur stderr pour les commandes qui lisent un dump.
+//! Progress bar on stderr for commands that read a dump.
 //!
-//! La barre se base sur les octets consommés du flux d'entrée : quand la
-//! taille totale est connue (fichier), on affiche pourcentage, débit et ETA ;
-//! sinon (stdin) un spinner avec les octets lus et le débit. Elle est
-//! automatiquement masquée si stderr n'est pas un terminal (CI, redirection).
+//! Progress is based on bytes consumed from the input stream: with a known
+//! total size (file), it shows percentage, throughput and ETA; otherwise
+//! (stdin), a spinner with bytes read and throughput. Hidden automatically
+//! when stderr is not a terminal (CI, redirection).
 
 use std::io::Read;
 use std::time::Duration;
@@ -22,7 +22,7 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// `total_bytes` : taille du flux d'entrée si elle est connue.
+    /// `total_bytes`: input stream size, if known.
     pub fn new(total_bytes: Option<u64>, label: &str) -> Self {
         let bar = match total_bytes {
             Some(len) => {
@@ -59,12 +59,12 @@ impl Progress {
         }
     }
 
-    /// Enveloppe le flux d'entrée pour faire avancer la barre à chaque lecture.
+    /// Wraps the input stream so that each read advances the bar.
     pub fn wrap_read<R: Read>(&self, reader: R) -> ProgressBarIter<R> {
         self.bar.wrap_read(reader)
     }
 
-    /// Met à jour la table courante et le compteur de lignes.
+    /// Updates the current table and the row counter.
     pub fn update(&mut self, ev: transform::Progress<'_>) {
         match ev {
             transform::Progress::Table(name) => self.table = Some(name.to_string()),
@@ -78,11 +78,11 @@ impl Progress {
         self.bar.set_message(msg);
     }
 
-    /// Remplace la barre par une ligne de bilan :
+    /// Replaces the bar with a summary line:
     /// `✔ analyse  6 tables · 42.83 MiB en 0.4s`.
     ///
-    /// Une analyse rapide peut se terminer avant le premier rafraîchissement
-    /// de la barre ; cette ligne garantit un retour visible dans tous les cas.
+    /// A fast scan may finish before the first redraw; this line guarantees
+    /// visible feedback in every case.
     pub fn finish(&self, detail: &str) {
         let elapsed = self.bar.elapsed();
         let duration = if elapsed.as_secs() < 1 {
@@ -105,14 +105,14 @@ impl Progress {
                 .tick_chars("✔✔"),
         );
         self.bar.finish_with_message(summary);
-        // indicatif laisse le curseur en fin de ligne : sans ce saut, la
-        // prochaine écriture sur stdout viendrait se coller au bilan.
+        // indicatif leaves the cursor at the end of the line; without this newline,
+        // the next write to stdout would be glued to the summary.
         if !self.bar.is_hidden() {
             eprintln!();
         }
     }
 
-    /// Bilan de `transform` : `✔ anonymize  531 840 lignes · 9 tables · 42.83 MiB en 2.2s`.
+    /// `transform` summary: `✔ anonymize  531 840 lignes · 9 tables · 42.83 MiB en 2.2s`.
     pub fn finish_transform(&self, rows: u64, tables: usize) {
         self.finish(&format!(
             "{} lignes · {tables} tables",
@@ -120,8 +120,8 @@ impl Progress {
         ));
     }
 
-    /// `true` si la barre n'est pas affichée (stderr n'est pas un terminal) :
-    /// le bilan doit alors être écrit explicitement par l'appelant.
+    /// `true` if the bar is hidden (stderr is not a terminal): the caller must
+    /// then print the summary itself.
     pub fn is_hidden(&self) -> bool {
         self.bar.is_hidden()
     }
@@ -129,8 +129,7 @@ impl Progress {
 
 impl Drop for Progress {
     fn drop(&mut self) {
-        // En cas d'erreur, on ne laisse pas une barre à moitié dessinée
-        // au-dessus du message d'erreur.
+        // On error, don't leave a half-drawn bar above the error message.
         if !self.bar.is_finished() {
             self.bar.finish_and_clear();
         }

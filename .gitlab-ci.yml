@@ -31,8 +31,8 @@ test:
   script:
     - cargo test
 
-# Déploie docs/landing sur GitLab Pages (https://<namespace>.gitlab.io/sosie).
-# Le job doit s'appeler `pages` et publier un dossier `public/` en artefact.
+# Deploys docs/landing to GitLab Pages (https://<namespace>.gitlab.io/sosie).
+# The job must be named `pages` and publish a `public/` directory as an artifact.
 pages:
   stage: deploy
   image: alpine:latest

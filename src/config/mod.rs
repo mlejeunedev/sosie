@@ -1,4 +1,4 @@
-//! Chargement et validation de `sosie.yaml`.
+//! Loading and validation of `sosie.yaml`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -8,29 +8,39 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde::de::{self, MapAccess, Visitor};
 
-/// Presets connus de la v0.1 (voir `src/presets`). Utilisé pour valider les
-/// règles de la config et proposer une suggestion en cas de faute de frappe.
+/// Presets available in v0.1 (see `src/presets`). Used to validate rules and
+/// suggest a fix for typos.
 pub use crate::presets::KNOWN_PRESETS;
 
+/// Parsed and validated contents of `sosie.yaml`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    /// Config format version.
     pub version: u32,
     pub source: Source,
     pub mode: Mode,
     #[serde(default)]
     pub defaults: Defaults,
+    /// Per-table, per-column transformation rules: `tables.<table>.<column>`.
     #[serde(default)]
     pub tables: BTreeMap<String, BTreeMap<String, Rule>>,
+    /// Tables emitted with their structure but no rows.
     #[serde(default)]
     pub skip_tables: Vec<String>,
+    /// Same effect as `skip_tables` in v0.1.
     #[serde(default)]
     pub truncate_tables: Vec<String>,
+    /// Ambiguous `table.column` entries left by `init`; must be empty for
+    /// `check` to pass.
     #[serde(default)]
     pub review: Vec<String>,
     #[serde(default)]
     pub sampling: Option<Sampling>,
 }
 
+/// Database the dump comes from. Only `mysql` is supported in v0.1.
+/// Connection details (DSN, credentials) never belong here: they come from
+/// environment variables.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Source {
     pub kind: String,
@@ -39,20 +49,28 @@ pub struct Source {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
+    /// HMAC key generated randomly per run and discarded: output differs on
+    /// every run.
     Anonymize,
+    /// HMAC key read from `SOSIE_KEY`: output is stable across runs.
     Pseudonymize,
 }
 
+/// What to do with a column that has no rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnUnclassified {
+    /// Refuse to proceed (safe default).
     #[default]
     Fail,
+    /// Leave the column untouched.
     Keep,
 }
 
+/// Global settings applied when a rule does not override them.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Defaults {
+    /// Locale used to generate fake data. Only `fr_FR` in v0.1.
     #[serde(default = "default_locale")]
     pub locale: String,
     #[serde(default)]
@@ -78,9 +96,9 @@ pub struct Sampling {
     pub rate: Option<f64>,
 }
 
-/// Une règle de transformation pour une colonne : soit une forme courte
-/// (`keep`, `null`, `constant("…")`, ou un nom de preset nu), soit une map
-/// `{ preset: …, ...paramètres }`.
+/// Transformation rule for a column. Written either as a short form (`keep`,
+/// `null`, `constant("…")`, a bare preset name) or as a map
+/// `{ preset: …, ...params }`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rule {
     Keep,
@@ -145,6 +163,8 @@ impl<'de> Deserialize<'de> for Rule {
     }
 }
 
+/// Parses the short string form of a rule; anything unrecognized is treated
+/// as a preset name (validated later in `Config::validate`).
 fn parse_rule_str(s: &str) -> std::result::Result<Rule, String> {
     if s == "keep" {
         return Ok(Rule::Keep);
@@ -170,12 +190,10 @@ fn parse_rule_str(s: &str) -> std::result::Result<Rule, String> {
     })
 }
 
-/// Clés qui n'ont rien à faire dans un fichier de config versionné.
+/// Secret-bearing keys that must never appear in a versioned config file.
 ///
-/// On ne regarde que la racine et `source` : `tables.*.*` contient des noms
-/// de colonnes définis par le schéma de l'application (une vraie table peut
-/// très bien avoir une colonne `password` ou `key`), ce n'est pas de la
-/// config sosie et ça ne doit jamais déclencher cette vérification.
+/// Only the root and `source` are checked: keys under `tables.*.*` are column
+/// names from the app schema, where `password` or `key` are legitimate.
 const FORBIDDEN_KEYS: &[&str] = &["dsn", "password", "key"];
 
 fn check_no_secrets(raw: &serde_yaml::Value) -> Result<()> {
@@ -206,7 +224,7 @@ fn check_no_secrets(raw: &serde_yaml::Value) -> Result<()> {
     Ok(())
 }
 
-/// Distance de Levenshtein, pour suggérer un preset proche d'une faute de frappe.
+/// Levenshtein distance, used to suggest a preset for a typo.
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -227,6 +245,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
+/// Closest known preset within an edit distance of 2, if any.
 fn suggest_preset(unknown: &str) -> Option<&'static str> {
     KNOWN_PRESETS
         .iter()
@@ -252,6 +271,7 @@ fn validate_preset_name(table: &str, column: &str, name: &str) -> Result<()> {
 }
 
 impl Config {
+    /// Reads and parses the config file at `path`.
     pub fn load(path: impl AsRef<Path>) -> Result<Config> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)
@@ -259,8 +279,10 @@ impl Config {
         Self::parse(&text)
     }
 
+    /// Parses and validates a YAML config.
     pub fn parse(text: &str) -> Result<Config> {
         let raw: serde_yaml::Value = serde_yaml::from_str(text).context("YAML invalide")?;
+        // Checked on the raw YAML, before serde silently drops unknown keys.
         check_no_secrets(&raw)?;
 
         let config: Config = serde_yaml::from_value(raw).context("config invalide")?;
@@ -268,6 +290,8 @@ impl Config {
         Ok(config)
     }
 
+    /// Semantic checks beyond deserialization: v0.1 support limits, preset
+    /// names, and `SOSIE_KEY` presence in pseudonymize mode.
     fn validate(&self) -> Result<()> {
         if self.source.kind != "mysql" {
             bail!(
@@ -340,8 +364,7 @@ mod tests {
 
     #[test]
     fn loads_incomplete_fixture_without_erroring_at_load_time() {
-        // 02_incomplete.yaml est syntaxiquement valide ; c'est `check` (étape 6)
-        // qui doit détecter les colonnes manquantes, pas le chargement.
+        // Syntactically valid: missing columns are caught by `check`, not at load time.
         let text = include_str!("../../fixtures/exemples/configs/02_incomplete.yaml");
         Config::parse(text).unwrap();
     }
@@ -356,7 +379,7 @@ mod tests {
     #[test]
     fn pseudonymize_fixture_requires_sosie_key() {
         let text = include_str!("../../fixtures/exemples/configs/03_pseudonymize.yaml");
-        // SOSIE_KEY absent dans l'environnement de test.
+        // Make sure SOSIE_KEY is unset.
         unsafe {
             std::env::remove_var("SOSIE_KEY");
         }
@@ -389,8 +412,7 @@ password: "hunter2"
 
     #[test]
     fn allows_password_as_a_column_name() {
-        // `tables.*.*` décrit le schéma réel de l'appli : une colonne nommée
-        // `password` ou `key` est légitime et ne doit pas être bloquée.
+        // `tables.*.*` mirrors the app schema: `password`/`key` columns are legitimate.
         let text = r#"
 version: 1
 source: { kind: mysql }
