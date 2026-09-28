@@ -71,7 +71,7 @@ pub fn resolve_key(config: &Config) -> Result<Vec<u8>> {
     match config.mode {
         Mode::Anonymize => Ok(rand::random::<[u8; 32]>().to_vec()),
         Mode::Pseudonymize => {
-            let key = std::env::var("SOSIE_KEY").context("SOSIE_KEY manquante")?;
+            let key = std::env::var("SOSIE_KEY").context("SOSIE_KEY missing")?;
             Ok(key.into_bytes())
         }
     }
@@ -118,9 +118,9 @@ fn build_table_plan(config: &Config, table: &DumpTable) -> Result<TablePlan> {
                     let classification = scan::classify_by_name(&col.name);
                     if classification.score >= scan::THRESHOLD_MANDATORY {
                         bail!(
-                            "{}.{} : colonne détectée comme sensible ({}) sans règle dans la config. \
-                             Ajoute une règle explicite, ou passe `defaults.on_unclassified: keep` \
-                             si c'est un faux positif.",
+                            "{}.{}: column detected as sensitive ({}) without a rule in the config. \
+                             Add an explicit rule, or set `defaults.on_unclassified: keep` \
+                             if it is a false positive.",
                             table.name,
                             col.name,
                             classification.reason
@@ -376,7 +376,9 @@ pub fn run_with_progress<R: Read, W: Write, F: FnMut(Progress<'_>)>(
                 let p = plan
                     .as_ref()
                     .filter(|p| &p.table == table)
-                    .with_context(|| format!("INSERT INTO {table} sans CREATE TABLE préalable"))?;
+                    .with_context(|| {
+                        format!("INSERT INTO {table} without a preceding CREATE TABLE")
+                    })?;
                 skipping = p.skip;
                 if skipping {
                     // Neither written nor parsed: jump straight to the next statement.
@@ -390,10 +392,10 @@ pub fn run_with_progress<R: Read, W: Write, F: FnMut(Progress<'_>)>(
                 if skipping {
                     continue;
                 }
-                let table_name = plan.as_ref().expect("Row sans RowsBegin").table.clone();
+                let table_name = plan.as_ref().expect("Row without RowsBegin").table.clone();
                 let mut transformed: Vec<Value> = Vec::with_capacity(values.len());
                 for (v, col_name) in values.iter().zip(current_order.iter()) {
-                    let p = plan.as_mut().expect("Row sans RowsBegin");
+                    let p = plan.as_mut().expect("Row without RowsBegin");
                     // Disjoint borrows of the same `&mut TablePlan`: `column_action` (read) on
                     // one side, `dedup_by_input`/`used_outputs` (mutated) on the other. Distinct
                     // fields, so the compiler splits the borrows.
@@ -491,7 +493,7 @@ mod tests {
 
         assert_eq!(
             out1, out2,
-            "deux exécutions en pseudonymize doivent produire le même octet-à-octet"
+            "two pseudonymize runs must produce byte-identical output"
         );
         assert!(!out1.is_empty());
 
@@ -514,7 +516,7 @@ mod tests {
         let mut out = Vec::new();
         let mut report = Report::new("anonymize");
         let err = run(&cfg, input, &mut out, &mut report).unwrap_err();
-        assert!(err.to_string().contains("sans règle"));
+        assert!(err.to_string().contains("without a rule"));
     }
 
     #[test]
@@ -552,7 +554,7 @@ tables:
         run(&cfg, input, &mut out, &mut report).unwrap();
         let text = String::from_utf8_lossy(&out);
         assert!(!text.contains("x@y.fr"));
-        assert!(text.contains("ligne1\\nligne2\\ttab\\\\backslash \\\"quoted\\\" \\0nul"));
+        assert!(text.contains("line1\\nline2\\ttab\\\\backslash \\\"quoted\\\" \\0nul"));
     }
 
     #[test]
@@ -604,7 +606,7 @@ tables:
         assert_eq!(
             outputs.len(),
             10,
-            "10 entrées distinctes doivent occuper les 10 sorties possibles du pool, sans collision"
+            "10 distinct inputs must occupy the 10 possible outputs of the pool, without collision"
         );
 
         // A previously seen input must always yield exactly the same output.
@@ -622,7 +624,7 @@ tables:
         assert_eq!(
             used.len(),
             10,
-            "une entrée répétée ne consomme pas de nouvelle sortie"
+            "a repeated input does not consume a new output"
         );
     }
 }

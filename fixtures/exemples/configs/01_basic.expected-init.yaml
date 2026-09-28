@@ -1,9 +1,9 @@
-# Ce que `dbclone init --from examples/dumps/01_basic.sql` DOIT générer
-# (sans --doctrine). Les commentaires indiquent le signal déclencheur.
-# Les valeurs exactes des scores peuvent bouger ; ce qui est testé :
-#   - chaque colonne ci-dessous est présente, avec ce preset
-#   - la section review contient exactement ces entrées
-#   - aucune autre colonne n'apparaît
+# What `sosie init --from fixtures/exemples/dumps/01_basic.sql` MUST generate
+# (without --doctrine). Comments give the triggering signal.
+# Exact score values may change; what is tested:
+#   - every column below is present, with this preset
+#   - the review section contains exactly these entries
+#   - no other column appears
 
 version: 1
 
@@ -18,33 +18,33 @@ defaults:
 
 tables:
   user:
-    email: email                     # nom + contenu (5/5 emails)
-    first_name: first_name           # nom
-    last_name: last_name             # nom
-    phone: phone                     # nom + contenu (3/3 téléphones)
-    birth_date: { preset: date_shift, days: 365 }   # nom (birth)
-    password: constant("$2y$13$DEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVO")  # nom (password)
-    api_token: null                  # nom (token)
+    email: email                     # name + content (5/5 emails)
+    first_name: first_name           # name
+    last_name: last_name             # name
+    phone: phone                     # name + content (3/3 phones)
+    birth_date: { preset: date_shift, days: 365 }   # name (birth)
+    password: constant("$2y$13$DEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVO")  # name (password)
+    api_token: null                  # name (token)
 
   address:
-    line1: address_line              # nom (line1) dans une table "address"
-    line2: null                      # nom (line2) — nullable → null
-    city: city                       # nom
-    postcode: postcode               # nom
+    line1: address_line              # name (line1) in an "address" table
+    line2: null                      # name (line2) — nullable → null
+    city: city                       # name
+    postcode: postcode               # name
 
   order:
-    customer_email: email            # nom + contenu (4/4 emails)
+    customer_email: email            # name + content (4/4 emails)
 
   bank_account:
-    iban: iban                       # nom + contenu (2/2 IBAN mod 97 OK)
-    bic: bic                         # nom
-    holder_name: full_name           # nom (holder + name)
+    iban: iban                       # name + content (2/2 IBAN mod 97 OK)
+    bic: bic                         # name
+    holder_name: full_name           # name (holder + name)
 
   audit_log:
-    ip_address: ip                   # nom + contenu (2/2 IP)
+    ip_address: ip                   # name + content (2/2 IP)
 
 review:
-  - user.nickname                    # nom générique + varchar(50) : peut-être un pseudo identifiant
-  - order.notes                      # texte libre, contient un téléphone dans 1/3 des valeurs
-  - audit_log.payload                # JSON contenant une clé "email"
-  - product.name                     # "name" hors contexte personne : score moyen, à trancher
+  - user.nickname                    # generic name + varchar(50): maybe an identifying handle
+  - order.notes                      # free text, contains a phone number in 1/3 of the values
+  - audit_log.payload                # JSON containing an "email" key
+  - product.name                     # "name" outside a person context: medium score, to decide

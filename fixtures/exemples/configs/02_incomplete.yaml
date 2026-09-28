@@ -1,9 +1,9 @@
-# Config volontairement incomplète pour examples/dumps/01_basic.sql
-# Attendu : `dbclone check` échoue, `dbclone transform` refuse de démarrer
-# et n'écrit AUCUN octet en sortie.
+# Deliberately incomplete config for fixtures/exemples/dumps/01_basic.sql
+# Expected: `sosie check` fails, `sosie transform` refuses to start
+# and writes NO byte of output.
 #
-# Manquants : user.phone, user.password, address.line1, bank_account.* ,
-#             order.notes, order.customer_email, et audit_log n'est pas skippée.
+# Missing: user.phone, user.password, address.line1, bank_account.* ,
+#          order.notes, order.customer_email, and audit_log is not skipped.
 
 version: 1
 

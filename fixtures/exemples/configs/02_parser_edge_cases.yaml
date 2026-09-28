@@ -1,6 +1,6 @@
-# Config pour examples/dumps/02_parser_edge_cases.sql
-# Seules les colonnes `email` sont transformées. Tout le reste doit ressortir
-# byte-à-byte identique (y compris échappements, hex, _binary, vues, triggers).
+# Config for fixtures/exemples/dumps/02_parser_edge_cases.sql
+# Only the `email` columns are transformed. Everything else must come out
+# byte-for-byte identical (including escapes, hex, _binary, views, triggers).
 
 version: 1
 
@@ -17,7 +17,7 @@ tables:
   order:
     email: email
     key: keep
-    desc: keep          # texte libre volontairement gardé ici pour tester le round-trip
+    desc: keep          # free text deliberately kept here to test the round-trip
 
   misc:
     email: email
@@ -26,8 +26,8 @@ tables:
 
   gen:
     email: email
-    # email_domain est une colonne GENERATED : absente des INSERT, ne doit pas
-    # être exigée par la config ni faire échouer check
+    # email_domain is a GENERATED column: absent from INSERTs, it must not
+    # be required by the config nor make check fail
 
   empty_table:
     email: email

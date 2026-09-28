@@ -43,7 +43,7 @@ impl Seed {
 /// always yield the same seed (required by `pseudonymize` mode).
 pub fn seed_for(key: &[u8], preset: &str, value: &[u8]) -> Seed {
     let mut mac =
-        Hmac::<Sha256>::new_from_slice(key).expect("HMAC-SHA256 accepte une clé de toute taille");
+        Hmac::<Sha256>::new_from_slice(key).expect("HMAC-SHA256 accepts a key of any size");
     mac.update(preset.as_bytes());
     mac.update(&[0u8]);
     mac.update(value);
@@ -92,7 +92,7 @@ pub fn build(name: &str, params: &BTreeMap<String, serde_yaml::Value>) -> Result
             Ok(Box::new(PostcodePreset { keep_department }))
         }
         "ip" => Ok(Box::new(IpPreset)),
-        other => bail!("preset inconnu : {other}"),
+        other => bail!("unknown preset: {other}"),
     }
 }
 
@@ -515,7 +515,7 @@ mod tests {
             &ColumnCtx { max_len: None },
         );
         let Value::Str(s) = out else {
-            panic!("attendu Str")
+            panic!("expected Str")
         };
         let s = String::from_utf8(s.into_owned()).unwrap();
         assert!(s.ends_with("@example.org"));
@@ -538,14 +538,14 @@ mod tests {
                 &ColumnCtx { max_len: None },
             );
             let Value::Str(s) = out else {
-                panic!("attendu Str")
+                panic!("expected Str")
             };
             outputs.insert(s.into_owned());
         }
         assert_eq!(
             outputs.len(),
             1000,
-            "1000 entrées distinctes doivent donner 1000 sorties distinctes"
+            "1000 distinct inputs must give 1000 distinct outputs"
         );
     }
 
@@ -566,7 +566,7 @@ mod tests {
             &ColumnCtx { max_len: None },
         );
         let Value::Str(s) = out else {
-            panic!("attendu Str")
+            panic!("expected Str")
         };
         let s = String::from_utf8(s.into_owned()).unwrap();
         assert_eq!(s.len(), "1985-03-14".len());
@@ -580,7 +580,7 @@ mod tests {
             &ColumnCtx { max_len: None },
         );
         let Value::Str(s) = out else {
-            panic!("attendu Str")
+            panic!("expected Str")
         };
         let s = String::from_utf8(s.into_owned()).unwrap();
         assert_eq!(s.len(), "FR7630006000011234567890189".len());

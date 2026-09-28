@@ -87,7 +87,7 @@ impl Report {
     pub fn write_header<W: Write>(&self, w: &mut W) -> io::Result<()> {
         writeln!(
             w,
-            "✔ {}  {} lignes · {} tables · {:.1}s",
+            "✔ {}  {} rows · {} tables · {:.1}s",
             self.mode,
             group_thousands(self.rows_out()),
             self.tables.len(),
@@ -106,11 +106,11 @@ impl Report {
         if !self.raw_notable.is_empty() {
             writeln!(
                 w,
-                "  Objets non ré-générés (VIEW/TRIGGER/PROCEDURE) : {}",
+                "  Objects not regenerated (VIEW/TRIGGER/PROCEDURE): {}",
                 self.raw_notable.join(", ")
             )?;
         }
-        writeln!(w, "  détail : {JSON_DIR}/{JSON_FILE}")
+        writeln!(w, "  details: {JSON_DIR}/{JSON_FILE}")
     }
 
     fn write_tables<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -131,7 +131,7 @@ impl Report {
         let mut untouched: Vec<&str> = Vec::new();
         for (table, t) in &self.tables {
             if t.skipped {
-                writeln!(w, "  {table:<name_width$}  skippée")?;
+                writeln!(w, "  {table:<name_width$}  skipped")?;
                 continue;
             }
             let cols = t.touched_columns();
@@ -141,19 +141,19 @@ impl Report {
             }
             let rows = group_thousands(t.rows_out);
             let mut line = format!(
-                "  {table:<name_width$}  {rows:>rows_width$} lignes · {cols} {}",
-                plural(cols, "colonne")
+                "  {table:<name_width$}  {rows:>rows_width$} rows · {cols} {}",
+                plural(cols, "column")
             );
             let truncated = t.truncated();
             if truncated > 0 {
-                line.push_str(&format!(" · ⚠ {} tronquées", group_thousands(truncated)));
+                line.push_str(&format!(" · ⚠ {} truncated", group_thousands(truncated)));
             }
             writeln!(w, "{line}")?;
         }
         if !untouched.is_empty() {
             writeln!(
                 w,
-                "  {} {} sans transformation : {}",
+                "  {} {} without transformation: {}",
                 untouched.len(),
                 plural(untouched.len(), "table"),
                 untouched.join(", ")
@@ -165,15 +165,15 @@ impl Report {
     fn write_columns<W: Write>(&self, w: &mut W) -> io::Result<()> {
         for (table, t) in &self.tables {
             if t.skipped {
-                writeln!(w, "  {table} — skippée (structure gardée, 0 ligne)")?;
+                writeln!(w, "  {table} — skipped (structure kept, 0 rows)")?;
                 continue;
             }
-            writeln!(w, "  {table} — {} lignes", group_thousands(t.rows_out))?;
+            writeln!(w, "  {table} — {} rows", group_thousands(t.rows_out))?;
             for (column, c) in &t.columns {
                 if c.touched() {
                     writeln!(
                         w,
-                        "    {column}: {} transformées, {} null, {} gardées, {} tronquées",
+                        "    {column}: {} transformed, {} null, {} kept, {} truncated",
                         c.transformed, c.null, c.kept, c.truncated
                     )?;
                 }
@@ -198,13 +198,13 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-/// `1234567` -> `1 234 567`.
+/// `1234567` -> `1,234,567`.
 pub fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(' ');
+            out.push(',');
         }
         out.push(c);
     }
@@ -265,11 +265,11 @@ mod tests {
     fn compact_summary_one_line_per_touched_table() {
         let out = render(&sample_report(), false);
         let expected = concat!(
-            "  audit_log  skippée\n",
-            "  products     6 600 lignes · 1 colonne · ⚠ 6 600 tronquées\n",
-            "  user       300 000 lignes · 2 colonnes\n",
-            "  2 tables sans transformation : orders, payments\n",
-            "  détail : .sosie/last-report.json\n",
+            "  audit_log  skipped\n",
+            "  products     6,600 rows · 1 column · ⚠ 6,600 truncated\n",
+            "  user       300,000 rows · 2 columns\n",
+            "  2 tables without transformation: orders, payments\n",
+            "  details: .sosie/last-report.json\n",
         );
         assert_eq!(out, expected);
     }
@@ -281,21 +281,19 @@ mod tests {
         user.rows_out = 5;
         user.columns.insert("email".into(), col(5, 0, 0));
         let out = render(&report, false);
-        assert!(!out.contains("sans transformation"));
+        assert!(!out.contains("without transformation"));
         assert!(!out.contains('⚠'));
-        assert!(!out.contains("skippée"));
+        assert!(!out.contains("skipped"));
     }
 
     #[test]
     fn verbose_summary_lists_columns() {
         let out = render(&sample_report(), true);
-        assert!(out.contains("  user — 300 000 lignes\n"));
-        assert!(out.contains("    email: 300000 transformées, 0 null, 0 gardées, 0 tronquées\n"));
-        assert!(
-            out.contains("    phone: 299000 transformées, 1000 null, 0 gardées, 0 tronquées\n")
-        );
+        assert!(out.contains("  user — 300,000 rows\n"));
+        assert!(out.contains("    email: 300000 transformed, 0 null, 0 kept, 0 truncated\n"));
+        assert!(out.contains("    phone: 299000 transformed, 1000 null, 0 kept, 0 truncated\n"));
         assert!(!out.contains("nickname"));
-        assert!(out.contains("  audit_log — skippée (structure gardée, 0 ligne)\n"));
+        assert!(out.contains("  audit_log — skipped (structure kept, 0 rows)\n"));
     }
 
     #[test]
@@ -306,15 +304,15 @@ mod tests {
         report.write_header(&mut buf).unwrap();
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "✔ anonymize  342 540 lignes · 5 tables · 2.2s\n"
+            "✔ anonymize  342,540 rows · 5 tables · 2.2s\n"
         );
     }
 
     #[test]
-    fn groups_thousands_with_spaces() {
+    fn groups_thousands_with_commas() {
         assert_eq!(group_thousands(0), "0");
         assert_eq!(group_thousands(999), "999");
-        assert_eq!(group_thousands(1_000), "1 000");
-        assert_eq!(group_thousands(1_234_567), "1 234 567");
+        assert_eq!(group_thousands(1_000), "1,000");
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
     }
 }

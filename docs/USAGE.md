@@ -1,220 +1,207 @@
-# Sosie — état actuel et guide d'utilisation
+# Sosie — usage guide
 
-> Ce document décrit ce que fait réellement le code aujourd'hui (pas la vision cible : voir `CAHIER_DES_CHARGES.md`, ni le plan de construction : voir `PLAN.md`).
+> This document describes what the code actually does today. For installation and quick start, see the `README.md`; for rule values and modes, see [`CONFIGURATION.md`](CONFIGURATION.md).
 
-## Où on en est
-
-Les étapes 0 à 6 du `PLAN.md` sont faites et fonctionnelles de bout en bout :
-
-- **Parseur/writer `mysqldump`** (`src/dump/mysql.rs`) : découpe un dump en évènements (`CREATE TABLE`, lignes d'un `INSERT`, reste tel quel), round-trip byte-à-byte vérifié par tests.
-- **Config** (`src/config`) : chargement et validation de `sosie.yaml`.
-- **Presets** (`src/presets`) : 13 transformateurs déterministes (voir plus bas).
-- **Moteur de transformation** (`src/transform`) : applique la config à un dump, en streaming, avec garde-fou de sécurité.
-- **Rapport** (`src/report`) : compteurs de fin d'exécution (jamais de valeur de donnée).
-- **Détection** (`src/scan`) : classification des colonnes par nom + par contenu, pour `init` et `check`.
-
-**Pas encore fait** (étape 7 du plan) : sortie compressée (`.zst`/`.gz`), mode `--dry-run` réellement testé à grande échelle, benchmark 1 Go, packaging/release binaires. Rien de tout ça n'empêche d'utiliser l'outil aujourd'hui.
-
-## Compiler et lancer
+## Build and run
 
 ```bash
 cargo build --release
 ./target/release/sosie --help
 ```
 
-Ou directement en développement : `cargo run -- <commande> ...`.
+Or directly during development: `cargo run -- <command> ...`.
 
-## Les 4 commandes
+## The 4 commands
 
-### `sosie init` — générer une config de départ
+### `sosie init` — generate a starter config
 
-Analyse un dump (schéma **et** contenu, échantillon de 200 valeurs par colonne texte) et propose un `sosie.yaml` commenté.
+Analyzes a dump (schema **and** content, a sample of 200 values per text column) and proposes a commented `sosie.yaml`.
 
 ```bash
 sosie init --from dump.sql --out sosie.yaml
 ```
 
-- Les colonnes détectées avec une confiance ≥ 0,8 (nom et/ou contenu correspondant à un email, téléphone, IBAN, adresse...) reçoivent un preset.
-- Les colonnes ambiguës (confiance 0,4–0,8 : `notes`, `nickname`, une colonne JSON contenant une clé sensible...) atterrissent dans une section `review:` à trancher à la main.
-- Le fichier généré n'est **pas** prêt à l'emploi : il faut le relire et décider quoi faire des colonnes en `review`.
+- Columns detected with a confidence ≥ 0.8 (name and/or content matching an email, phone, IBAN, address...) get a preset.
+- Ambiguous columns (confidence 0.4–0.8: `notes`, `nickname`, a JSON column containing a sensitive key...) end up in a `review:` section to be decided by hand.
+- The generated file is **not** ready to use: it has to be reviewed, and the `review` columns decided.
 
-### `sosie check` — vérifier qu'une config est complète
+### `sosie check` — verify that a config is complete
 
 ```bash
 sosie check --from dump.sql --config sosie.yaml
 ```
 
-Ré-analyse le dump et compare au fichier de config :
+Re-analyzes the dump and compares it with the config file:
 
-- toute colonne détectée comme sensible (≥ 0,8) sans règle explicite → échec (code de sortie 1) ;
-- toute colonne en zone grise (0,4–0,8) sans règle explicite → échec aussi ;
-- les tables listées dans `skip_tables`/`truncate_tables` sont exemptées (elles sortiront de toute façon sans données) ;
-- les colonnes `GENERATED` sont ignorées (elles n'apparaissent jamais dans un `INSERT`).
+- any column detected as sensitive (≥ 0.8) without an explicit rule → failure (exit code 1);
+- any grey-zone column (0.4–0.8) without an explicit rule → failure too;
+- tables listed in `skip_tables`/`truncate_tables` are exempt (they come out without data anyway);
+- `GENERATED` columns are ignored (they never appear in an `INSERT`).
 
-`check` doit passer avant de lancer `transform` en confiance — mais `transform` a aussi son propre garde-fou minimal (voir plus bas).
+`check` should pass before you run `transform` with confidence — but `transform` also has its own minimal safeguard (see below). Its exit code makes it a natural CI step.
 
-### `sosie transform` — transformer le dump
+### `sosie transform` — transform the dump
 
 ```bash
 sosie transform --from dump.sql --config sosie.yaml --out dump_clean.sql
-# ou en pipe, comme mysqldump le ferait :
-mysqldump ma_base | sosie transform --config sosie.yaml > dump_clean.sql
+# or as a pipe, the way mysqldump would be used:
+mysqldump my_db | sosie transform --config sosie.yaml > dump_clean.sql
 ```
 
-Options :
+Options:
 
-- `--from <fichier>` : par défaut, lit `stdin`.
-- `--out <fichier>` : par défaut, écrit sur `stdout`. Avec `--out`, l'écriture est atomique (fichier temporaire puis renommage ; en cas d'erreur, le fichier temporaire est supprimé, jamais de sortie partielle sous le nom final).
-- `--dry-run` : fait tout (parse, transforme) sans écrire la sortie.
-- `--verbose` : détaille le résumé final colonne par colonne (transformées / null / gardées / tronquées).
+- `--from <file>`: reads `stdin` by default.
+- `--out <file>`: writes to `stdout` by default. With `--out` on a regular file, the write is atomic (temporary file then rename; on error, the temporary file is deleted — never a partial output under the final name). Devices and pipes such as `/dev/null` are written to directly.
+- `--dry-run`: does everything (parse, transform) without writing the output.
+- `--verbose`: details the final summary column by column (transformed / null / kept / truncated).
 
-Garde-fou intégré : si une colonne n'a pas de règle dans la config **et** que son nom correspond à un motif sensible (email, password, iban, phone...), `transform` refuse de démarrer — sans avoir besoin d'avoir lancé `check` avant. C'est une sécurité de dernier recours basée sur le nom seul (pas le contenu, qui nécessiterait de rejouer tout le dump).
+Built-in safeguard: if a column has no rule in the config **and** its name matches a sensitive pattern (email, password, iban, phone...), `transform` refuses to start — without needing `check` to have run first. It is a last-resort safety net based on the name only (not the content, which would require replaying the whole dump).
 
-Pendant l'exécution : une barre de progression sur stderr (pourcentage, débit, ETA, table courante et lignes traitées) si `--from` est un fichier, un spinner avec les octets lus si l'entrée vient de stdin. Elle est masquée automatiquement quand stderr n'est pas un terminal (CI, redirection).
+While running: a progress bar on stderr (percentage, throughput, ETA, current table and rows processed) when `--from` is a file, a spinner with bytes read when the input comes from stdin. It is hidden automatically when stderr is not a terminal (CI, redirection).
 
-À la fin : un résumé compact sur le terminal — une ligne de bilan, une ligne par table transformée (lignes et nombre de colonnes touchées), les tables skippées, les tables sorties sans transformation regroupées sur une ligne, et un avertissement `⚠` seulement si des valeurs ont dû être tronquées. Avec `--verbose`, le détail colonne par colonne. Un rapport complet est écrit dans `.sosie/last-report.json` — uniquement des compteurs, jamais une valeur réelle. Quand le dump part sur stdout (pas de `--out`), le résumé est envoyé sur stderr pour ne jamais se mélanger au SQL.
+At the end: a compact summary in the terminal — one overall line, one line per transformed table (rows and number of columns touched), skipped tables, tables output without transformation grouped on one line, and a `⚠` warning only if values had to be truncated. With `--verbose`, the column-by-column detail. A full report is written to `.sosie/last-report.json` — counters only, never a real value. When the dump goes to stdout (no `--out`), the summary is sent to stderr so it never mixes with the SQL.
 
-### `sosie presets` — lister les presets disponibles
+### `sosie presets` — list available presets
 
 ```bash
 sosie presets
 ```
 
-Affiche chaque preset avec un exemple d'entrée/sortie généré à la volée.
+Displays each preset with an input/output example generated on the fly.
 
-## Cas d'usage : cloner une base `shop` en local sans PII
+## Walkthrough: cloning a `shop` database locally without PII
 
-Contexte : tu bosses sur une boutique en ligne (tables `user`, `address`, `order`, `bank_account`, `product`, `audit_log`). Tu dois reproduire un bug de commande en local, sans copier bêtement les données de vrais clients sur ton laptop.
+Context: you work on an online shop (tables `user`, `address`, `order`, `bank_account`, `product`, `audit_log`). You need to reproduce an order bug locally, without blindly copying real customers' data onto your laptop.
 
-**1. Dump de la prod** — rien de spécial à Sosie, c'est du `mysqldump` classique :
+**1. Dump production** — nothing Sosie-specific, it's plain `mysqldump`:
 
 ```bash
 mysqldump --single-transaction shop > dump.sql
 ```
 
-**2. Générer une config de départ**
+**2. Generate a starter config**
 
 ```bash
 sosie init --from dump.sql --out sosie.yaml
 ```
 
-Sosie scanne le schéma *et* les données, et produit un YAML avec les colonnes évidentes déjà couvertes (`email`, `iban`, `phone`, `birth_date`...) et une section `review:` pour ce qu'il ne peut pas trancher seul :
+Sosie scans the schema *and* the data, and produces a YAML file with the obvious columns already covered (`email`, `iban`, `phone`, `birth_date`...) and a `review:` section for what it can't decide on its own:
 
 ```yaml
 review:
-  - audit_log.payload  # JSON contenant une clé sensible
-  - order.notes         # texte libre
-  - product.name        # nom (name)
-  - user.nickname        # nom (name)
+  - audit_log.payload  # JSON containing a sensitive key
+  - order.notes  # free text
+  - product.name  # name (name)
+  - user.nickname  # name (name)
 ```
 
-**3. Trancher les cas ambigus** — le seul moment où un humain doit réfléchir. On édite le YAML généré : `order.notes: null`, `user.nickname: null`, `product.name: keep` (nom de produit, pas une personne), et toute la table `audit_log` dans `skip_tables` (son `payload` JSON contient des emails en clair, pas envie de le parser finement).
+**3. Decide the ambiguous cases** — the only moment a human has to think. Edit the generated YAML: `order.notes: null`, `user.nickname: null`, `product.name: keep` (a product name, not a person), and put the whole `audit_log` table in `skip_tables` (its JSON `payload` contains plain-text emails, not worth parsing finely).
 
-**4. Vérifier avant de lancer quoi que ce soit**
+**4. Check before running anything**
 
 ```bash
 $ sosie check --from dump.sql --config sosie.yaml
-check OK : 6 tables, aucune colonne sensible sans règle.
+check OK: 6 tables, no sensitive column without a rule.
 ```
 
-**5. Transformer**
+**5. Transform**
 
 ```bash
 $ sosie transform --from dump.sql --config sosie.yaml --out dump_clean.sql
-✔ anonymize  16 lignes · 6 tables · 7.16 KiB en 1 ms
-  address       3 lignes · 3 colonnes
-  audit_log     skippée
-  bank_account  2 lignes · 3 colonnes
-  order         4 lignes · 1 colonne
-  user          5 lignes · 6 colonnes
-  1 table sans transformation : product
-  détail : .sosie/last-report.json
+✔ anonymize  16 rows · 6 tables · 0.0s
+  address       3 rows · 3 columns
+  audit_log     skipped
+  bank_account  2 rows · 3 columns
+  order         4 rows · 1 column
+  user          5 rows · 6 columns
+  1 table without transformation: product
+  details: .sosie/last-report.json
 ```
 
-(`sosie transform --verbose` détaille chaque colonne : transformées, null, gardées, tronquées.)
+(`sosie transform --verbose` details each column: transformed, null, kept, truncated.)
 
-Une ligne réelle, avant/après :
+A real row, before/after:
 
 ```
--- avant
-(1,'jean.dupont@gmail.com','Jean','Dupont','0612345678','1985-03-14','$2y$13$...',...)
--- après
-(1,'baptiste.david@example.org','Damien','Girard','0793816898','1985-01-24','',...)
+-- before
+(1,'jean.dupont@gmail.com','Jean','Dupont','0612345678','1985-03-14','$2y$13$abcd…','tok_a1b2c3d4e5f6','jeanjean',…)
+-- after
+(1,'claire.andre.504a71@example.org','Theo','Lefebvre','0795958940','1985-08-26','$2y$13$DEVONLY…',NULL,NULL,…)
 ```
 
-(`password` est `NOT NULL` dans le schéma : la règle `null` produit une chaîne vide, pas un `NULL` littéral, pour rester du SQL valide à l'import — voir la note sous le tableau des presets.)
+(Here `password` uses a `constant(...)` rule, and `api_token` / `nickname` use `null`. On a `NOT NULL` column, `null` produces an empty string rather than a literal `NULL`, to stay valid SQL on import — see the note under the presets table.)
 
-**6. Importer en local**
+**6. Import locally**
 
 ```bash
 mysql shop_dev < dump_clean.sql
 ```
 
-## Le fichier `sosie.yaml`
+## The `sosie.yaml` file
 
 ```yaml
 version: 1
 
 source:
-  kind: mysql          # seule valeur supportée en v0.1
+  kind: mysql          # only supported value in v0.1
 
-mode: anonymize         # ou pseudonymize (nécessite $SOSIE_KEY, >= 16 caractères)
+mode: anonymize         # or pseudonymize (requires $SOSIE_KEY, >= 16 characters)
 
 defaults:
-  locale: fr_FR         # seule valeur supportée en v0.1
-  on_unclassified: fail # ou keep, pour désactiver le garde-fou
+  locale: fr_FR         # only supported value in v0.1
+  on_unclassified: fail # or keep, to disable the safeguard
 
 tables:
   user:
-    email: email                                   # preset nu
-    birth_date: { preset: date_shift, days: 365 }   # preset avec paramètres
-    password: constant("dev-only-hash")             # valeur fixe
-    api_token: null                                 # -> NULL (ou chaîne vide si colonne NOT NULL)
-    id: keep                                        # copie telle quelle, explicite
+    email: email                                   # bare preset
+    birth_date: { preset: date_shift, days: 365 }   # preset with parameters
+    password: constant("dev-only-hash")             # fixed value
+    api_token: null                                 # -> NULL (or empty string if the column is NOT NULL)
+    id: keep                                        # copied as is, explicitly
 
 skip_tables:
-  - audit_log           # structure gardée, zéro ligne dans la sortie
+  - audit_log           # structure kept, zero rows in the output
 
-review: []              # informatif, rempli par `init` ; `check` ne s'y fie pas
+review: []              # informative, filled by `init`; `check` doesn't rely on it
 ```
 
-Points importants :
+Important points:
 
-- Jamais de secret dans ce fichier (`dsn`, `password`, `key` à la racine ou sous `source` sont refusés au chargement) — une colonne de schéma nommée `password` reste bien sûr autorisée.
-- Un preset inconnu dans la config fait échouer le chargement, avec une suggestion si le nom ressemble à un preset existant (faute de frappe).
+- Never any secret in this file (`dsn`, `password`, `key` at the root or under `source` are rejected at load time) — a schema column named `password` is of course still allowed.
+- An unknown preset in the config makes loading fail, with a suggestion if the name looks like an existing preset (typo).
 
-Pour le détail des 4 valeurs de règle possibles (`keep`/`null`/`constant`/preset) et la différence entre `mode: anonymize` et `mode: pseudonymize` : **[`docs/CONFIGURATION.md`](CONFIGURATION.md)**.
+For the details of the 4 possible rule values (`keep`/`null`/`constant`/preset) and the difference between `mode: anonymize` and `mode: pseudonymize`: **[`docs/CONFIGURATION.md`](CONFIGURATION.md)**.
 
-## Les presets disponibles
+## Available presets
 
-| Preset | Comportement |
+| Preset | Behavior |
 |---|---|
-| `email` | `prenom.nom@example.org`, à partir de listes fr_FR embarquées |
-| `first_name`, `last_name`, `full_name` | Piochés dans des listes fr_FR embarquées |
-| `phone` | Numéro français plausible, même format que l'entrée (national ou `+33 ...`) |
-| `date_shift` | Décale la date de ±`days` jours (365 par défaut), même format en sortie |
-| `iban` | Même pays, BBAN aléatoire, clé de contrôle mod 97 recalculée et valide |
-| `bic` | Même pays, reste aléatoire |
-| `address_line` | `12 rue de la Paix`-style, liste de voies fr_FR embarquée |
-| `city` | Ville tirée d'une liste fr_FR embarquée |
-| `postcode` | Code postal plausible ; `keep_department: true` conserve les 2 premiers chiffres |
-| `ip` | Adresse dans une plage documentation (RFC 5737 / 2001:db8::) |
-| `hash` | Hex du HMAC, pour les identifiants opaques |
+| `email` | `firstname.lastname.<hex>@example.org`, from embedded fr_FR lists (the hex suffix keeps values unique) |
+| `first_name`, `last_name`, `full_name` | Picked from embedded fr_FR lists |
+| `phone` | Plausible French number, same format as the input (national or `+33 ...`) |
+| `date_shift` | Shifts the date by ±`days` days (365 by default), same output format |
+| `iban` | Same country, random BBAN, mod 97 check digits recomputed and valid |
+| `bic` | Same country, rest random |
+| `address_line` | `12 rue de la Paix`-style, from an embedded list of fr_FR street names |
+| `city` | City picked from an embedded fr_FR list |
+| `postcode` | Plausible postcode; `keep_department: true` keeps the first 2 digits |
+| `ip` | Address in a documentation range (RFC 5737 / 2001:db8::) |
+| `hash` | Hex of the HMAC, for opaque identifiers |
 
-Règles communes à tous les presets : `NULL` reste `NULL`, une chaîne vide reste vide, la sortie est tronquée à la taille de la colonne (`VARCHAR(n)`), et une même valeur d'entrée donne toujours la même sortie pour un même preset et une même clé (déterminisme).
+Rules common to all presets: `NULL` stays `NULL`, an empty string stays empty, the output is truncated to the column size (`VARCHAR(n)`), and the same input value always gives the same output for the same preset and the same key (determinism).
 
-Rules hors preset : `keep` (copie explicite), `null` (force `NULL`, ou chaîne vide si la colonne est `NOT NULL` — jamais de `NULL` littéral invalide), `constant("...")` (valeur fixe).
+Non-preset rules: `keep` (explicit copy), `null` (forces `NULL`, or an empty string if the column is `NOT NULL` — never an invalid literal `NULL`), `constant("...")` (fixed value).
 
-## Limitations connues
+## Known limitations
 
-- MySQL uniquement (pas Postgres), locale `fr_FR` uniquement.
-- Pas de sortie compressée : le fichier de sortie est du SQL brut, à compresser soi-même si besoin (`sosie transform ... | zstd -o out.sql.zst`).
-- Une valeur échappée en SQL avec des apostrophes doublées (`''`, rarissime — `mysqldump` utilise toujours `\'`) est comprise correctement mais toujours ré-écrite au format `mysqldump` standard (`\'`) : le round-trip est donc identique en contenu, pas forcément octet pour octet sur ce cas précis.
-- Pas de mapping Doctrine/Symfony (prévu au-delà de la v0.1).
+- MySQL / MariaDB only (no Postgres), `fr_FR` locale only.
+- No compressed output: the output file is raw SQL, to compress yourself if needed (`sosie transform ... | zstd -o out.sql.zst`).
+- A value escaped in SQL with doubled quotes (`''`, very rare — `mysqldump` always uses `\'`) is parsed correctly but always rewritten in the standard `mysqldump` format (`\'`): the round-trip is identical in content, not necessarily byte for byte in that specific case.
+- No Doctrine/Symfony mapping (planned beyond v0.1).
 
-## Tester à grande échelle
+## Testing at scale
 
-Un générateur de dump synthétique est fourni en exemple Cargo. Il produit un dump `mysqldump` réaliste (schéma classicmodels + table `user`, données variées, clés étrangères cohérentes, emails uniques), déterministe pour une graine donnée, à environ 200 Mo/s :
+A synthetic dump generator is provided as a Cargo example. It produces a realistic `mysqldump` dump (classicmodels schema + a `user` table, varied data, consistent foreign keys, unique emails), deterministic for a given seed, at roughly 200 MB/s:
 
 ```
 cargo run --release --example gen_dump -- --size 1G --out fixtures/big/big.sql
@@ -222,6 +209,6 @@ sosie check --from fixtures/big/big.sql --config sosie.yaml
 sosie transform --from fixtures/big/big.sql --config sosie.yaml --out fixtures/big/big.anon.sql
 ```
 
-`fixtures/big/` est ignoré par git. Options : `--size` (`500M`, `1G`, `4G`…), `--seed` (même graine = même dump).
+`fixtures/big/` is ignored by git. Options: `--size` (`500M`, `1G`, `4G`…), `--seed` (same seed = same dump).
 
-Il n'y a pas de limite de taille : le dump est traité en streaming, une instruction à la fois, avec quelques Mo de mémoire de base. Le seul coût qui grandit avec les données est l'état de déduplication des colonnes `UNIQUE`/`PRIMARY KEY` transformées par un preset (ex. `user.email`) : environ 150 octets par valeur distincte, soit ~1,5 Go pour 10 millions d'emails uniques. Les tables dans `skip_tables`/`truncate_tables` sont sautées sans parser leurs lignes. Ordre de grandeur mesuré : 1 Go et 17 millions de lignes en 40 s sur un portable.
+There is no size limit: the dump is processed in streaming, one statement at a time, with a few MB of base memory. The only cost that grows with the data is the deduplication state of `UNIQUE`/`PRIMARY KEY` columns transformed by a preset (e.g. `user.email`): about 150 bytes per distinct value, i.e. ~1.5 GB for 10 million unique emails. Tables in `skip_tables`/`truncate_tables` are skipped without parsing their rows. Measured order of magnitude: 1.1 GB and 17 million rows in ~30 s, under 100 MB peak memory, on an Apple M1 Pro laptop.

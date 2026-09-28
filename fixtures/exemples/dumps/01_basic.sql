@@ -36,7 +36,7 @@ CREATE TABLE `user` (
 
 LOCK TABLES `user` WRITE;
 /*!40000 ALTER TABLE `user` DISABLE KEYS */;
-INSERT INTO `user` VALUES (1,'jean.dupont@gmail.com','Jean','Dupont','0612345678','1985-03-14','$2y$13$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ0123456','tok_a1b2c3d4e5f6','jeanjean','[\"ROLE_USER\"]','2023-01-10 09:12:44'),(2,'marie.o\'connor@example.com','Marie','O\'Connor','+33 7 98 76 54 32',NULL,'$2y$13$zyxwvutsrqponmlkjihgfeZYXWVUTSRQPONMLKJIHGFEDCBA987654','tok_ffffffffffff',NULL,'[\"ROLE_USER\",\"ROLE_ADMIN\"]','2023-02-01 18:00:00'),(3,'admin@shop.internal','Admin','Système',NULL,NULL,'$2y$13$1111111111111111111111111111111111111111111111111111','tok_000000000000','root','[\"ROLE_SUPER_ADMIN\"]','2022-12-31 23:59:59'),(4,'lucas.martin@orange.fr','Lucas','Martin','0700000001','2001-11-30','$2y$13$2222222222222222222222222222222222222222222222222222',NULL,'lulu \\ le \"grand\"','[\"ROLE_USER\"]','2024-06-15 12:00:00'),(5,'jean.dupont@gmail.com','Jean','Dupont','0612345678','1985-03-14','$2y$13$3333333333333333333333333333333333333333333333333333',NULL,NULL,'[\"ROLE_USER\"]','2024-07-01 08:30:00');
+INSERT INTO `user` VALUES (1,'jean.dupont@gmail.com','Jean','Dupont','0612345678','1985-03-14','$2y$13$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ0123456','tok_a1b2c3d4e5f6','jeanjean','[\"ROLE_USER\"]','2023-01-10 09:12:44'),(2,'marie.o\'connor@example.com','Marie','O\'Connor','+33 7 98 76 54 32',NULL,'$2y$13$zyxwvutsrqponmlkjihgfeZYXWVUTSRQPONMLKJIHGFEDCBA987654','tok_ffffffffffff',NULL,'[\"ROLE_USER\",\"ROLE_ADMIN\"]','2023-02-01 18:00:00'),(3,'admin@shop.internal','Admin','System',NULL,NULL,'$2y$13$1111111111111111111111111111111111111111111111111111','tok_000000000000','root','[\"ROLE_SUPER_ADMIN\"]','2022-12-31 23:59:59'),(4,'lucas.martin@orange.fr','Lucas','Martin','0700000001','2001-11-30','$2y$13$2222222222222222222222222222222222222222222222222222',NULL,'lulu \\ le \"grand\"','[\"ROLE_USER\"]','2024-06-15 12:00:00'),(5,'jean.dupont@gmail.com','Jean','Dupont','0612345678','1985-03-14','$2y$13$3333333333333333333333333333333333333333333333333333',NULL,NULL,'[\"ROLE_USER\"]','2024-07-01 08:30:00');
 /*!40000 ALTER TABLE `user` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -60,7 +60,7 @@ CREATE TABLE `address` (
 
 LOCK TABLES `address` WRITE;
 /*!40000 ALTER TABLE `address` DISABLE KEYS */;
-INSERT INTO `address` VALUES (1,1,'12 rue de la Paix','Bât. B, 3e étage','Paris','75002','FR'),(2,2,'4 impasse des Lilas',NULL,'Lyon','69003','FR'),(3,4,'Flat 2, 10 Downing Street',NULL,'London','SW1A 2AA','GB');
+INSERT INTO `address` VALUES (1,1,'12 rue de la Paix','Bldg. B, 3rd floor','Paris','75002','FR'),(2,2,'4 impasse des Lilas',NULL,'Lyon','69003','FR'),(3,4,'Flat 2, 10 Downing Street',NULL,'London','SW1A 2AA','GB');
 /*!40000 ALTER TABLE `address` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -86,7 +86,7 @@ CREATE TABLE `order` (
 
 LOCK TABLES `order` WRITE;
 /*!40000 ALTER TABLE `order` DISABLE KEYS */;
-INSERT INTO `order` VALUES (1,1,'ORD-2024-0001','jean.dupont@gmail.com',149.90,'EUR','paid','Livrer avant 18h, appeler M. Dupont au 06 12 34 56 78','2024-03-01 10:15:00'),(2,1,'ORD-2024-0002','jean.dupont@gmail.com',19.99,'EUR','shipped',NULL,'2024-03-05 16:40:12'),(3,2,'ORD-2024-0003','marie.o\'connor@example.com',1200.00,'EUR','pending','','2024-04-20 09:00:00'),(4,4,'ORD-2024-0004','lucas.martin@orange.fr',5.00,'GBP','cancelled','Client dit : \"je ne veux plus\"\nRemboursé.','2024-06-16 14:22:33');
+INSERT INTO `order` VALUES (1,1,'ORD-2024-0001','jean.dupont@gmail.com',149.90,'EUR','paid','Deliver before 6pm, call Mr. Dupont at 06 12 34 56 78','2024-03-01 10:15:00'),(2,1,'ORD-2024-0002','jean.dupont@gmail.com',19.99,'EUR','shipped',NULL,'2024-03-05 16:40:12'),(3,2,'ORD-2024-0003','marie.o\'connor@example.com',1200.00,'EUR','pending','','2024-04-20 09:00:00'),(4,4,'ORD-2024-0004','lucas.martin@orange.fr',5.00,'GBP','cancelled','Customer says: \"I no longer want it\"\nRefunded.','2024-06-16 14:22:33');
 /*!40000 ALTER TABLE `order` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -111,7 +111,7 @@ INSERT INTO `bank_account` VALUES (1,1,'FR7630006000011234567890189','AGRIFRPP',
 UNLOCK TABLES;
 
 --
--- Table structure for table `product`  (référentiel : aucune PII)
+-- Table structure for table `product`  (reference data: no PII)
 --
 
 DROP TABLE IF EXISTS `product`;
@@ -125,11 +125,11 @@ CREATE TABLE `product` (
 ) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 LOCK TABLES `product` WRITE;
-INSERT INTO `product` VALUES (1,'SKU-001','Clavier mécanique',89.00,0x89504E470D0A1A0A),(2,'SKU-002','Écran 27\"',299.00,NULL);
+INSERT INTO `product` VALUES (1,'SKU-001','Mechanical keyboard',89.00,0x89504E470D0A1A0A),(2,'SKU-002','27\" monitor',299.00,NULL);
 UNLOCK TABLES;
 
 --
--- Table structure for table `audit_log`  (à vider)
+-- Table structure for table `audit_log`  (to be emptied)
 --
 
 DROP TABLE IF EXISTS `audit_log`;

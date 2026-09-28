@@ -32,7 +32,7 @@ impl Progress {
                         "{spinner:.cyan} {prefix:.bold} {bar:28.cyan/240} {percent:>3}% \
                          {bytes:>9}/{total_bytes:<9} {bytes_per_sec:>10} · ETA {eta:<4} {msg:.dim}",
                     )
-                    .expect("template valide")
+                    .expect("valid template")
                     .tick_chars(TICK_CHARS)
                     .progress_chars("━╸─"),
                 );
@@ -42,9 +42,9 @@ impl Progress {
                 let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
                 bar.set_style(
                     ProgressStyle::with_template(
-                        "{spinner:.cyan} {prefix:.bold} {bytes:>9} lus {bytes_per_sec:>10} · {elapsed} {msg:.dim}",
+                        "{spinner:.cyan} {prefix:.bold} {bytes:>9} read {bytes_per_sec:>10} · {elapsed} {msg:.dim}",
                     )
-                    .expect("template valide")
+                    .expect("valid template")
                     .tick_chars(TICK_CHARS),
                 );
                 bar
@@ -70,7 +70,7 @@ impl Progress {
             transform::Progress::Table(name) => self.table = Some(name.to_string()),
             transform::Progress::Rows(n) => self.rows = n,
         }
-        let mut msg = format!("{} lignes", group_thousands(self.rows));
+        let mut msg = format!("{} rows", group_thousands(self.rows));
         if let Some(table) = &self.table {
             msg.push_str(" · ");
             msg.push_str(table);
@@ -79,7 +79,7 @@ impl Progress {
     }
 
     /// Replaces the bar with a summary line:
-    /// `✔ analyse  6 tables · 42.83 MiB en 0.4s`.
+    /// `✔ scan  6 tables · 42.83 MiB in 0.4s`.
     ///
     /// A fast scan may finish before the first redraw; this line guarantees
     /// visible feedback in every case.
@@ -96,12 +96,12 @@ impl Progress {
             summary.push_str(" · ");
         }
         summary.push_str(&format!(
-            "{} en {duration}",
+            "{} in {duration}",
             HumanBytes(self.bar.position())
         ));
         self.bar.set_style(
             ProgressStyle::with_template("{spinner:.green} {prefix:.bold}  {msg}")
-                .expect("template valide")
+                .expect("valid template")
                 .tick_chars("✔✔"),
         );
         self.bar.finish_with_message(summary);
@@ -112,12 +112,9 @@ impl Progress {
         }
     }
 
-    /// `transform` summary: `✔ anonymize  531 840 lignes · 9 tables · 42.83 MiB en 2.2s`.
+    /// `transform` summary: `✔ anonymize  531,840 rows · 9 tables · 42.83 MiB in 2.2s`.
     pub fn finish_transform(&self, rows: u64, tables: usize) {
-        self.finish(&format!(
-            "{} lignes · {tables} tables",
-            group_thousands(rows)
-        ));
+        self.finish(&format!("{} rows · {tables} tables", group_thousands(rows)));
     }
 
     /// `true` if the bar is hidden (stderr is not a terminal): the caller must
