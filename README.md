@@ -38,13 +38,19 @@ Sosie automates this with one simple rule: **by default, it refuses to run if a 
 
 ## Installation
 
-**With Rust installed:**
+**With Rust installed** (a recent stable toolchain from [rustup](https://rustup.rs); works on any OS, servers included):
 
 ```bash
-cargo install sosie
+cargo install --locked sosie
 ```
 
 **Without Rust:** download the prebuilt binary for your platform (Linux, macOS Intel / Apple Silicon, Windows) from the [GitHub Releases page](https://github.com/mlejeunedev/sosie/releases), extract it and run `./sosie --help`.
+
+- **macOS:** the binary isn't signed, so macOS blocks it on first launch ("Apple could not verify…"). Remove the quarantine flag once:
+  ```bash
+  xattr -d com.apple.quarantine ./sosie
+  ```
+- **Linux:** the prebuilt binary needs a recent glibc (Ubuntu 24.04+, Debian 13+ or equivalent). On older distributions, use `cargo install` above.
 
 **From source:**
 
