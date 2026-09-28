@@ -123,7 +123,7 @@ impl<'de> Deserialize<'de> for Rule {
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 write!(
                     f,
-                    "null, une chaîne (\"email\", \"keep\", \"null\", `constant(\"...\")`) ou une map {{ preset: ..., ... }}"
+                    "null, a string (\"email\", \"keep\", \"null\", `constant(\"...\")`) or a map {{ preset: ..., ... }}"
                 )
             }
 
@@ -181,7 +181,7 @@ fn parse_rule_str(s: &str) -> std::result::Result<Rule, String> {
             return Ok(Rule::Constant(inner[1..inner.len() - 1].to_string()));
         }
         return Err(format!(
-            "`constant(...)` doit contenir une chaîne entre guillemets, trouvé : {s}"
+            "`constant(...)` must contain a quoted string, found: {s}"
         ));
     }
     Ok(Rule::Preset {
@@ -204,7 +204,7 @@ fn check_no_secrets(raw: &serde_yaml::Value) -> Result<()> {
         let Some(key) = k.as_str() else { continue };
         if FORBIDDEN_KEYS.contains(&key) {
             bail!(
-                "clé interdite `{key}` à la racine de la config : ne mets jamais de secret (dsn/password/key) dedans, utilise une variable d'environnement"
+                "forbidden key `{key}` at the root of the config: never put secrets (dsn/password/key) in it, use an environment variable"
             );
         }
         if key == "source"
@@ -215,7 +215,7 @@ fn check_no_secrets(raw: &serde_yaml::Value) -> Result<()> {
                     && FORBIDDEN_KEYS.contains(&skey)
                 {
                     bail!(
-                        "clé interdite `source.{skey}` : ne mets jamais de secret (dsn/password/key) dedans, utilise une variable d'environnement"
+                        "forbidden key `source.{skey}`: never put secrets (dsn/password/key) in it, use an environment variable"
                     );
                 }
             }
@@ -261,10 +261,10 @@ fn validate_preset_name(table: &str, column: &str, name: &str) -> Result<()> {
     }
     match suggest_preset(name) {
         Some(suggestion) => {
-            bail!("{table}.{column} : preset inconnu `{name}` (voulais-tu dire `{suggestion}` ?)")
+            bail!("{table}.{column}: unknown preset `{name}` (did you mean `{suggestion}`?)")
         }
         None => bail!(
-            "{table}.{column} : preset inconnu `{name}` (presets disponibles : {})",
+            "{table}.{column}: unknown preset `{name}` (available presets: {})",
             KNOWN_PRESETS.join(", ")
         ),
     }
@@ -274,18 +274,18 @@ impl Config {
     /// Reads and parses the config file at `path`.
     pub fn load(path: impl AsRef<Path>) -> Result<Config> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("lecture de {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Self::parse(&text)
     }
 
     /// Parses and validates a YAML config.
     pub fn parse(text: &str) -> Result<Config> {
-        let raw: serde_yaml::Value = serde_yaml::from_str(text).context("YAML invalide")?;
+        let raw: serde_yaml::Value = serde_yaml::from_str(text).context("invalid YAML")?;
         // Checked on the raw YAML, before serde silently drops unknown keys.
         check_no_secrets(&raw)?;
 
-        let config: Config = serde_yaml::from_value(raw).context("config invalide")?;
+        let config: Config = serde_yaml::from_value(raw).context("invalid config")?;
         config.validate()?;
         Ok(config)
     }
@@ -295,14 +295,14 @@ impl Config {
     fn validate(&self) -> Result<()> {
         if self.source.kind != "mysql" {
             bail!(
-                "source.kind `{}` non supporté en v0.1 (seul `mysql` l'est)",
+                "source.kind `{}` is not supported in v0.1 (only `mysql` is)",
                 self.source.kind
             );
         }
 
         if self.defaults.locale != "fr_FR" {
             bail!(
-                "defaults.locale `{}` non supportée en v0.1 (seule `fr_FR` l'est)",
+                "defaults.locale `{}` is not supported in v0.1 (only `fr_FR` is)",
                 self.defaults.locale
             );
         }
@@ -318,9 +318,9 @@ impl Config {
         if self.mode == Mode::Pseudonymize {
             match std::env::var("SOSIE_KEY") {
                 Ok(key) if key.len() >= 16 => {}
-                Ok(_) => bail!("SOSIE_KEY doit faire au moins 16 caractères"),
+                Ok(_) => bail!("SOSIE_KEY must be at least 16 characters long"),
                 Err(_) => bail!(
-                    "mode: pseudonymize nécessite la variable d'environnement SOSIE_KEY (>= 16 caractères)"
+                    "mode: pseudonymize requires the SOSIE_KEY environment variable (>= 16 characters)"
                 ),
             }
         }
@@ -351,14 +351,14 @@ mod tests {
         assert_eq!(config.tables["product"]["name"], Rule::Keep);
         match &config.tables["user"]["password"] {
             Rule::Constant(v) => assert!(v.starts_with("$2y$13$")),
-            other => panic!("attendu Constant, trouvé {other:?}"),
+            other => panic!("expected Constant, found {other:?}"),
         }
         match &config.tables["user"]["birth_date"] {
             Rule::Preset { name, params } => {
                 assert_eq!(name, "date_shift");
                 assert_eq!(params["days"], serde_yaml::Value::from(365));
             }
-            other => panic!("attendu Preset, trouvé {other:?}"),
+            other => panic!("expected Preset, found {other:?}"),
         }
     }
 

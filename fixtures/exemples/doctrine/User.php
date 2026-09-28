@@ -13,20 +13,20 @@ use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Validator\Constraints as Assert;
 
 /**
- * Fixture pour `dbclone init --doctrine examples/doctrine`.
+ * Fixture for `sosie init --doctrine fixtures/exemples/doctrine` (option not implemented yet).
  *
- * Attendu du scanner Doctrine :
- *   - table `user` (attribut ORM\Table, sinon nom de classe en snake_case)
+ * Expected from the Doctrine scanner:
+ *   - table `user` (ORM\Table attribute, otherwise class name in snake_case)
  *   - email        → email        (Assert\Email, score 1.0)
- *   - firstName    → first_name   (nom de propriété, colonne `first_name` via naming strategy underscore)
+ *   - firstName    → first_name   (property name, `first_name` column via the underscore naming strategy)
  *   - lastName     → last_name
- *   - phone        → phone        (Assert\Regex sur un motif téléphone → phone)
- *   - birthDate    → date_shift   (nom + type date)
+ *   - phone        → phone        (Assert\Regex on a phone pattern → phone)
+ *   - birthDate    → date_shift   (name + date type)
  *   - password     → constant     (PasswordAuthenticatedUserInterface)
- *   - apiToken     → null         (nom token)
+ *   - apiToken     → null         (name token)
  *   - nickname     → review
- *   - roles        → keep         (json, pas de PII)
- *   - relation OneToMany addresses → arête FK address.user_id → user.id (pour le sampling)
+ *   - roles        → keep         (json, no PII)
+ *   - OneToMany addresses relation → FK edge address.user_id → user.id (for sampling)
  */
 #[ORM\Entity(repositoryClass: UserRepository::class)]
 #[ORM\Table(name: '`user`')]
@@ -100,6 +100,6 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     {
     }
 
-    // getters/setters volontairement omis : le scanner ne doit lire que
-    // les attributs et les déclarations de propriétés.
+    // getters/setters deliberately omitted: the scanner must only read
+    // attributes and property declarations.
 }

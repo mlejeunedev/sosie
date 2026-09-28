@@ -8,16 +8,16 @@ use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Validator\Constraints as Assert;
 
 /**
- * Attendu du scanner Doctrine :
+ * Expected from the Doctrine scanner:
  *   - table `bank_account`
- *   - accountNumber → colonne `iban` (name: explicite) → preset iban (Assert\Iban)
- *   - swift         → colonne `bic`                     → preset bic  (Assert\Bic)
- *   - holderName    → colonne `holder_name`             → full_name (nom)
+ *   - accountNumber → `iban` column (explicit name:) → preset iban (Assert\Iban)
+ *   - swift         → `bic` column                      → preset bic  (Assert\Bic)
+ *   - holderName    → `holder_name` column              → full_name (name)
  *   - isDefault     → keep (bool)
- *   - relation ManyToOne user → arête FK bank_account.user_id → user.id
+ *   - ManyToOne user relation → FK edge bank_account.user_id → user.id
  *
- * Piège : le nom de propriété `accountNumber` ne dit pas "iban", c'est
- * l'attribut de validation qui doit gagner.
+ * Trap: the property name `accountNumber` doesn't say "iban", the
+ * validation attribute must win.
  */
 #[ORM\Entity]
 #[ORM\Table(name: 'bank_account')]

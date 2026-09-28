@@ -1,27 +1,27 @@
--- Dump synthétique : cas limites du parseur mysqldump.
--- Test principal : parse → serialize SANS transformation == ce fichier, byte à byte.
--- Test secondaire : avec 02_parser_edge_cases.yaml, seule la colonne `email` change.
+-- Synthetic dump: mysqldump parser edge cases.
+-- Main test: parse → serialize WITHOUT transformation == this file, byte for byte.
+-- Secondary test: with 02_parser_edge_cases.yaml, only the `email` column changes.
 
 /*!40101 SET NAMES utf8mb4 */;
 
--- 1. Nom de table réservé, colonnes avec noms réservés, commentaire de colonne contenant une virgule et une parenthèse
+-- 1. Reserved table name, columns with reserved names, column comment containing a comma and a parenthesis
 DROP TABLE IF EXISTS `order`;
 CREATE TABLE `order` (
   `id` int NOT NULL,
-  `key` varchar(10) NOT NULL COMMENT 'clé (unique), attention',
+  `key` varchar(10) NOT NULL COMMENT 'key (unique), careful',
   `email` varchar(180) DEFAULT NULL,
   `desc` text,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 2. Échappements : apostrophe échappée, backslash, guillemet double, saut de ligne, tabulation, NUL, chaîne vide, NULL
-INSERT INTO `order` VALUES (1,'a\'b','x@y.fr','ligne1\nligne2\ttab\\backslash \"quoted\" \0nul'),(2,'','',''),(3,'c',NULL,NULL);
+-- 2. Escapes: escaped apostrophe, backslash, double quote, newline, tab, NUL, empty string, NULL
+INSERT INTO `order` VALUES (1,'a\'b','x@y.fr','line1\nline2\ttab\\backslash \"quoted\" \0nul'),(2,'','',''),(3,'c',NULL,NULL);
 
--- 3. INSERT sur plusieurs lignes physiques (mysqldump --skip-extended-insert) + INSERT avec liste de colonnes
+-- 3. INSERT over several physical lines (mysqldump --skip-extended-insert) + INSERT with a column list
 INSERT INTO `order` VALUES (4,'d','d@d.fr','ok');
-INSERT INTO `order` (`id`, `key`, `email`, `desc`) VALUES (5,'e','e@e.fr','avec colonnes');
+INSERT INTO `order` (`id`, `key`, `email`, `desc`) VALUES (5,'e','e@e.fr','with columns');
 
--- 4. Valeurs non-chaînes : hex, _binary, nombres négatifs, flottants, dates, booléens
+-- 4. Non-string values: hex, _binary, negative numbers, floats, dates, booleans
 DROP TABLE IF EXISTS `misc`;
 CREATE TABLE `misc` (
   `id` int NOT NULL,
@@ -37,10 +37,10 @@ CREATE TABLE `misc` (
 
 INSERT INTO `misc` VALUES (1,0xDEADBEEF,_binary '\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0',-1.5e-10,-12345.6789,'2024-02-29 23:59:59.123456',_binary '\0','m@m.fr'),(2,NULL,NULL,NULL,NULL,NULL,NULL,NULL);
 
--- 5. Une valeur qui ressemble à du SQL à l'intérieur d'une chaîne (ne doit PAS être interprétée)
-INSERT INTO `misc` VALUES (3,NULL,NULL,NULL,NULL,NULL,NULL,'INSERT INTO `user` VALUES (1,''x''); -- pas une vraie requête');
+-- 5. A value that looks like SQL inside a string (must NOT be interpreted)
+INSERT INTO `misc` VALUES (3,NULL,NULL,NULL,NULL,NULL,NULL,'INSERT INTO `user` VALUES (1,''x''); -- not a real query');
 
--- 6. Colonne générée, colonne avec DEFAULT expression, CHECK constraint, index fulltext
+-- 6. Generated column, column with a DEFAULT expression, CHECK constraint, fulltext index
 DROP TABLE IF EXISTS `gen`;
 CREATE TABLE `gen` (
   `id` int NOT NULL,
@@ -53,10 +53,10 @@ CREATE TABLE `gen` (
   CONSTRAINT `chk_qty` CHECK ((`qty` >= 0))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- mysqldump omet les colonnes générées dans les INSERT : il n'y a que 4 valeurs, pas 5
+-- mysqldump omits generated columns from INSERTs: there are only 4 values, not 5
 INSERT INTO `gen` (`id`, `email`, `created`, `qty`) VALUES (1,'g@g.fr','2024-01-01 00:00:00',3);
 
--- 7. Vue et trigger : transmis tels quels (Raw), avec un avertissement dans le rapport
+-- 7. View and trigger: passed through as is (Raw), with a warning in the report
 DROP VIEW IF EXISTS `v_emails`;
 /*!50001 CREATE ALGORITHM=UNDEFINED */
 /*!50013 DEFINER=`app`@`%` SQL SECURITY DEFINER */
@@ -66,7 +66,7 @@ DELIMITER ;;
 /*!50003 CREATE*/ /*!50017 DEFINER=`app`@`%`*/ /*!50003 TRIGGER `trg_order` BEFORE INSERT ON `order` FOR EACH ROW SET NEW.`key` = LOWER(NEW.`key`) */;;
 DELIMITER ;
 
--- 8. Table sans aucune ligne (INSERT absent)
+-- 8. Table without any row (no INSERT)
 DROP TABLE IF EXISTS `empty_table`;
 CREATE TABLE `empty_table` (
   `id` int NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE `empty_table` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 9. Unicode, emoji, caractères 4 octets, apostrophe typographique (non échappée car ≠ ')
+-- 9. Unicode, emoji, 4-byte characters, typographic apostrophe (not escaped since ≠ ')
 INSERT INTO `empty_table` VALUES (1,'émoji-😀-中文-Œuvre-l’apostrophe@x.fr');
 
 -- Dump completed

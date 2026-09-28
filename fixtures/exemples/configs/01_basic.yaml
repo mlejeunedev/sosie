@@ -1,5 +1,5 @@
-# Config complète pour examples/dumps/01_basic.sql
-# `dbclone check` doit passer avec ce fichier (section review vide).
+# Complete config for fixtures/exemples/dumps/01_basic.sql
+# `sosie check` must pass with this file (empty review section).
 
 version: 1
 
@@ -21,7 +21,7 @@ tables:
     birth_date: { preset: date_shift, days: 365 }
     password: constant("$2y$13$DEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVONLYDEVO")
     api_token: null
-    nickname: null           # tranché à la main : trop ambigu, on vide
+    nickname: null           # decided by hand: too ambiguous, empty it
     roles: keep
 
   address:
@@ -32,8 +32,8 @@ tables:
     country: keep
 
   order:
-    customer_email: email    # même preset que user.email → cohérent
-    notes: null              # texte libre contenant une PII (voir ligne 1)
+    customer_email: email    # same preset as user.email → consistent
+    notes: null              # free text containing PII (see row 1)
     amount: keep
     reference: keep
 
@@ -43,9 +43,9 @@ tables:
     holder_name: full_name
 
   product:
-    name: keep               # nom de produit, pas de personne ; explicite pour faire taire le scan
+    name: keep               # product name, not a person; explicit to silence the scan
 
 skip_tables:
-  - audit_log                # structure conservée, zéro ligne
+  - audit_log                # structure kept, zero rows
 
 review: []

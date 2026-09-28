@@ -1,13 +1,24 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sosie — clone ta prod MySQL sans les données perso</title>
-<meta name="description" content="Sosie transforme un dump mysqldump en une copie fidèle de ta prod, sans qu'une seule donnée personnelle réelle n'y survive. Une commande, en streaming, sûr par défaut.">
-<meta property="og:title" content="Sosie — clone ta prod MySQL sans les données perso">
-<meta property="og:description" content="Un dump de prod anonymisé en une commande. Structure, volume et cohérence intacts. Zéro donnée réelle.">
+<title>Sosie — clone your MySQL prod without the personal data</title>
+<meta name="description" content="Sosie turns a mysqldump dump into a faithful copy of your production database, without a single real piece of personal data surviving. One command, streaming, safe by default.">
+<meta property="og:title" content="Sosie — clone your MySQL prod without the personal data">
+<meta property="og:description" content="An anonymized production dump in one command. Structure, volume and consistency intact. Zero real data.">
 <meta property="og:type" content="website">
+<script>
+  // Pick the language before first paint: saved choice, else browser language.
+  (function () {
+    var lang;
+    try { lang = localStorage.getItem('sosie-lang'); } catch (e) {}
+    if (lang !== 'en' && lang !== 'fr') {
+      lang = (navigator.language || '').toLowerCase().indexOf('fr') === 0 ? 'fr' : 'en';
+    }
+    document.documentElement.lang = lang;
+  })();
+</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M16 5l9 11-9 11-9-11z' fill='%23ff8552'/%3E%3C/svg%3E">
 <style>
   :root {
@@ -260,6 +271,17 @@
     section { padding-block: 60px; }
     .stat b { font-size: 1.5rem; }
   }
+  /* ---------- language toggle ---------- */
+  html[lang="en"] body [lang="fr"], html[lang="fr"] body [lang="en"] { display: none !important; }
+  .nav-right { display: flex; align-items: center; gap: 12px; }
+  .lang-switch { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .lang-switch button {
+    background: none; border: 0; color: var(--text-dim); cursor: pointer;
+    font: 600 .76rem var(--mono); letter-spacing: .04em; padding: 7px 10px;
+  }
+  .lang-switch button:hover { color: var(--text); }
+  html[lang="en"] .lang-switch [data-lang="en"],
+  html[lang="fr"] .lang-switch [data-lang="fr"] { background: var(--accent-soft); color: var(--accent); }
 </style>
 </head>
 <body>
@@ -268,63 +290,73 @@
   <div class="wrap">
     <div class="logo"><span class="dot">◆</span> sosie</div>
     <div class="links">
-      <a href="#avant-apres">Avant / après</a>
-      <a href="#probleme">Le problème</a>
-      <a href="#solution">Ce que tu gagnes</a>
-      <a href="#comment">Comment ça marche</a>
-      <a href="#comparatif">Comparatif</a>
+      <a href="#before-after"><span lang="en">Before / after</span><span lang="fr">Avant / après</span></a>
+      <a href="#problem"><span lang="en">The problem</span><span lang="fr">Le problème</span></a>
+      <a href="#solution"><span lang="en">What you get</span><span lang="fr">Ce que tu gagnes</span></a>
+      <a href="#how"><span lang="en">How it works</span><span lang="fr">Comment ça marche</span></a>
+      <a href="#comparison"><span lang="en">Comparison</span><span lang="fr">Comparatif</span></a>
     </div>
-    <a class="btn-git" href="https://gitlab.com/mlejeune/sosie" target="_blank" rel="noopener">Voir sur GitLab →</a>
+    <div class="nav-right">
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" data-lang="en">EN</button>
+        <button type="button" data-lang="fr">FR</button>
+      </div>
+      <a class="btn-git" href="https://gitlab.com/mlejeune/sosie" target="_blank" rel="noopener"><span lang="en">View on GitLab →</span><span lang="fr">Voir sur GitLab →</span></a>
+    </div>
   </div>
 </nav>
 
 <header class="hero">
   <div class="wrap">
-    <span class="eyebrow"><i class="pulse"></i> CLI Rust · MySQL · streaming · open source</span>
-    <h1>Debug avec de vraies données.<br>Sans les <span class="accent">vraies</span> données.</h1>
+    <span class="eyebrow"><i class="pulse"></i> Rust CLI · MySQL · streaming · open source</span>
+    <h1><span lang="en">Debug with real data.<br>Without the <span class="accent">real</span> data.</span><span lang="fr">Debug avec de vraies données.<br>Sans les <span class="accent">vraies</span> données.</span></h1>
     <p class="subhead">
-      Sosie transforme un dump <code>mysqldump</code> en une copie fidèle de ta prod :
+      <span lang="en">Sosie turns a <code>mysqldump</code> dump into a faithful copy of your production database:
+      <strong>same structure, same volume, same consistency</strong>, without a single real piece of
+      personal data surviving. One command. Zero servers. Safe by default.</span>
+      <span lang="fr">Sosie transforme un dump <code>mysqldump</code> en une copie fidèle de ta prod :
       <strong>même structure, même volume, même cohérence</strong>, mais sans qu'une seule donnée
-      personnelle réelle n'y survive. Une commande. Zéro serveur. Sûr par défaut.
+      personnelle réelle n'y survive. Une commande. Zéro serveur. Sûr par défaut.</span>
     </p>
     <div class="cta-row">
-      <a class="btn btn-primary" href="#comment">Voir comment ça marche</a>
-      <a class="btn btn-secondary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener">Lire la doc</a>
+      <a class="btn btn-primary" href="#how"><span lang="en">See how it works</span><span lang="fr">Voir comment ça marche</span></a>
+      <a class="btn btn-secondary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Read the docs</span><span lang="fr">Lire la doc</span></a>
     </div>
 
-    <div class="term" id="term" aria-label="Démonstration en terminal">
+    <div class="term" id="term" aria-label="Terminal demo">
       <div class="term-bar"><i></i><i></i><i></i></div>
       <div class="term-body" id="term-body">
         <div class="line"><span class="prompt">$ </span><span class="cmd"><b>mysqldump</b> shop | <b>sosie</b> transform --config sosie.yaml &gt; dump_clean.sql</span></div>
-        <div class="line out"><span class="bar">████████████████████████████████</span> 100% · 1.0 GB · 25 MB/s · ETA 0s · order</div>
-        <div class="line out"><span class="ok">sosie transform — terminé en 40s</span></div>
-        <div class="line out">  user — 2 140 000 lignes</div>
-        <div class="line out">    email: 2 140 000 transformées, phone: 2 011 300 <span class="warn">/ 128 700 null</span>, iban: 2 140 000</div>
-        <div class="line out">  order — 14 900 000 lignes · notes: 14 900 000 <span class="warn">null</span></div>
-        <div class="line out">  audit_log — skippée (structure gardée, 0 ligne)</div>
+        <div class="line out"><span class="bar">████████████████████████████████</span> 100% · 1.0 GB · 37 MB/s · ETA 0s · order</div>
+        <div class="line out"><span class="ok">✔ anonymize  17,040,000 rows · 5 tables · 29.8s</span></div>
+        <div class="line out">  address        2,380,000 rows · 3 columns</div>
+        <div class="line out">  audit_log      <span class="warn">skipped</span></div>
+        <div class="line out">  order         12,480,000 rows · 1 column</div>
+        <div class="line out">  user           2,140,000 rows · 6 columns</div>
+        <div class="line out">  1 table without transformation: product</div>
         <div class="line"><span class="prompt">$ </span><span class="cmd"><b>mysql</b> shop_dev &lt; dump_clean.sql</span><span class="caret"></span></div>
       </div>
     </div>
 
     <div class="stats">
-      <div class="stat"><b>1 Go<em> / 40 s</em></b><span>17 millions de lignes, sur un portable</span></div>
-      <div class="stat"><b>~<em>quelques Mo</em></b><span>de RAM, quelle que soit la taille du dump</span></div>
-      <div class="stat"><b><em>13</em> presets</b><span>email, IBAN, téléphone, adresse, date…</span></div>
-      <div class="stat"><b><em>0</em> valeur réelle</b><span>dans la sortie, les logs ou le rapport</span></div>
+      <div class="stat"><b><span lang="en">1 GB</span><span lang="fr">1 Go</span><em> / 30 s</em></b><span lang="en">17 million rows, on a laptop (M1 Pro)</span><span lang="fr">17 millions de lignes, sur un portable (M1 Pro)</span></div>
+      <div class="stat"><b><em>&lt; 100</em> <span lang="en">MB</span><span lang="fr">Mo</span></b><span lang="en">of RAM for a 1 GB dump, streamed</span><span lang="fr">de RAM pour un dump de 1 Go, en streaming</span></div>
+      <div class="stat"><b><em>13</em> presets</b><span lang="en">email, IBAN, phone, address, date…</span><span lang="fr">email, IBAN, téléphone, adresse, date…</span></div>
+      <div class="stat"><b><em>0</em> <span lang="en">real values</span><span lang="fr">valeur réelle</span></b><span lang="en">in the output, the logs or the report</span><span lang="fr">dans la sortie, les logs ou le rapport</span></div>
     </div>
   </div>
 </header>
 
-<section id="avant-apres">
+<section id="before-after">
   <div class="wrap">
     <div class="section-head reveal">
-      <div class="kicker">Une ligne réelle, avant / après</div>
-      <h2>Ton appli ne verra pas la différence.<br>Le RGPD, si.</h2>
-      <p>Les valeurs sont fausses mais ont la bonne forme : ton code tourne en local exactement comme en prod, sans une seule exception de format.</p>
+      <div class="kicker"><span lang="en">A real row, before / after</span><span lang="fr">Une ligne réelle, avant / après</span></div>
+      <h2><span lang="en">Your app won't see the difference.<br>GDPR will.</span><span lang="fr">Ton appli ne verra pas la différence.<br>Le RGPD, si.</span></h2>
+      <p><span lang="en">The values are fake but have the right shape: your code runs locally exactly as in production, without a single format exception.</span><span lang="fr">Les valeurs sont fausses mais ont la bonne forme : ton code tourne en local exactement comme en prod, sans une seule exception de format.</span></p>
     </div>
     <div class="diff reveal">
       <div class="diff-col before">
-        <header>● prod — dump brut</header>
+        <header>● <span lang="en">prod — raw dump</span><span lang="fr">prod — dump brut</span></header>
         <pre><span class="k">id     </span> <span class="v">1</span>
 <span class="k">email  </span> <span class="v pii">jean.dupont@gmail.com</span>
 <span class="k">first  </span> <span class="v pii">Jean</span>
@@ -332,67 +364,69 @@
 <span class="k">phone  </span> <span class="v pii">0612345678</span>
 <span class="k">birth  </span> <span class="v pii">1985-03-14</span>
 <span class="k">iban   </span> <span class="v pii">FR76 3000 6000 0112 3456 7890 189</span>
-<span class="k">pwd    </span> <span class="v pii">$2y$13$hZ0…</span>
+<span class="k">token  </span> <span class="v pii">tok_a1b2c3d4e5f6</span>
 <span class="k">plan   </span> <span class="v">premium</span></pre>
       </div>
       <div class="diff-arrow">→</div>
       <div class="diff-col after">
-        <header>● dev — après sosie</header>
+        <header>● <span lang="en">dev — after sosie</span><span lang="fr">dev — après sosie</span></header>
         <pre><span class="k">id     </span> <span class="v">1</span>
-<span class="k">email  </span> <span class="v pii">baptiste.david@example.org</span>
-<span class="k">first  </span> <span class="v pii">Damien</span>
-<span class="k">last   </span> <span class="v pii">Girard</span>
-<span class="k">phone  </span> <span class="v pii">0793816898</span>
-<span class="k">birth  </span> <span class="v pii">1985-01-24</span>
-<span class="k">iban   </span> <span class="v pii">FR76 1820 6004 3891 0257 4438 502</span>
-<span class="k">pwd    </span> <span class="v pii">''</span>
+<span class="k">email  </span> <span class="v pii">claire.andre.504a71@example.org</span>
+<span class="k">first  </span> <span class="v pii">Theo</span>
+<span class="k">last   </span> <span class="v pii">Lefebvre</span>
+<span class="k">phone  </span> <span class="v pii">0795958940</span>
+<span class="k">birth  </span> <span class="v pii">1985-08-26</span>
+<span class="k">iban   </span> <span class="v pii">FR11 2473 5780 9025 2653 3963 261</span>
+<span class="k">token  </span> <span class="v pii">NULL</span>
 <span class="k">plan   </span> <span class="v">premium</span></pre>
       </div>
     </div>
     <p class="diff-note">
-      Même format de téléphone, date décalée de quelques jours, IBAN avec une <strong>vraie clé de contrôle mod 97</strong>,
-      mot de passe vidé sans casser le <code>NOT NULL</code>. Les colonnes métier restent intactes.
+      <span lang="en">Same phone format, date shifted by a few months, an IBAN with a <strong>real mod 97 checksum</strong>,
+      API token emptied. Business columns stay intact.</span>
+      <span lang="fr">Même format de téléphone, date décalée de quelques mois, IBAN avec une <strong>vraie clé de contrôle mod 97</strong>,
+      token d'API vidé. Les colonnes métier restent intactes.</span>
     </p>
   </div>
 </section>
 
-<section id="probleme" class="alt">
+<section id="problem" class="alt">
   <div class="wrap">
     <div class="section-head reveal">
-      <div class="kicker">Le problème</div>
-      <h2>Copier la prod sur un laptop, c'est une fuite qui s'ignore</h2>
-      <p>Tout le monde le fait. Personne n'en est fier. Et les alternatives sont toutes pires.</p>
+      <div class="kicker"><span lang="en">The problem</span><span lang="fr">Le problème</span></div>
+      <h2><span lang="en">Copying production to a laptop is a data leak waiting to happen</span><span lang="fr">Copier la prod sur un laptop, c'est une fuite qui s'ignore</span></h2>
+      <p><span lang="en">Everyone does it. Nobody is proud of it. And every alternative is worse.</span><span lang="fr">Tout le monde le fait. Personne n'en est fier. Et les alternatives sont toutes pires.</span></p>
     </div>
     <div class="grid pain">
       <div class="card reveal">
         <span class="icon">🧪</span>
-        <h3>Les fixtures ne ressemblent jamais à la prod</h3>
-        <p>Volumes irréalistes, cas limites absents : le bug que tu cherches à reproduire <strong>n'apparaît jamais en local</strong>.</p>
+        <h3><span lang="en">Fixtures never look like production</span><span lang="fr">Les fixtures ne ressemblent jamais à la prod</span></h3>
+        <p><span lang="en">Unrealistic volumes, missing edge cases: the bug you're trying to reproduce <strong>never shows up locally</strong>.</span><span lang="fr">Volumes irréalistes, cas limites absents : le bug que tu cherches à reproduire <strong>n'apparaît jamais en local</strong>.</span></p>
       </div>
       <div class="card reveal">
         <span class="icon">🚨</span>
-        <h3>Un dump brut, c'est une violation RGPD</h3>
-        <p>Emails, téléphones, IBAN, mots de passe hashés : tout part sur des laptops, des disques externes, des Slack. Hors de tout contrôle.</p>
+        <h3><span lang="en">A raw dump is a GDPR violation</span><span lang="fr">Un dump brut, c'est une violation RGPD</span></h3>
+        <p><span lang="en">Emails, phone numbers, IBANs, hashed passwords: it all ends up on laptops, external drives, Slack. Beyond any control.</span><span lang="fr">Emails, téléphones, IBAN, mots de passe hashés : tout part sur des laptops, des disques externes, des Slack. Hors de tout contrôle.</span></p>
       </div>
       <div class="card reveal">
         <span class="icon">🐌</span>
-        <h3>Les scripts SQL maison sont lents et fragiles</h3>
-        <p>Des heures d'<code>UPDATE</code> sur de gros volumes, cassés à la moindre migration, jamais maintenus au rythme du code.</p>
+        <h3><span lang="en">Homemade SQL scripts are slow and fragile</span><span lang="fr">Les scripts SQL maison sont lents et fragiles</span></h3>
+        <p><span lang="en">Hours of <code>UPDATE</code> on large volumes, broken by the slightest migration, never maintained at the pace of the code.</span><span lang="fr">Des heures d'<code>UPDATE</code> sur de gros volumes, cassés à la moindre migration, jamais maintenus au rythme du code.</span></p>
       </div>
       <div class="card reveal">
         <span class="icon">🔍</span>
-        <h3>L'oubli d'une colonne, ça arrive vite</h3>
-        <p>Un collègue ajoute une colonne <code>notes</code>. Le script d'anonymisation ne la connaît pas. <strong>Personne ne le voit</strong> avant qu'il soit trop tard.</p>
+        <h3><span lang="en">Forgetting a column happens fast</span><span lang="fr">L'oubli d'une colonne, ça arrive vite</span></h3>
+        <p><span lang="en">A colleague adds a <code>notes</code> column. The anonymization script doesn't know about it. <strong>Nobody notices</strong> until it's too late.</span><span lang="fr">Un collègue ajoute une colonne <code>notes</code>. Le script d'anonymisation ne la connaît pas. <strong>Personne ne le voit</strong> avant qu'il soit trop tard.</span></p>
       </div>
       <div class="card reveal">
         <span class="icon">🧱</span>
-        <h3>Les outils existants ne collent pas</h3>
-        <p>Postgres-only, ou un serveur à déployer, ou un SaaS à qui envoyer ta prod, ou abandonnés depuis des années.</p>
+        <h3><span lang="en">Existing tools don't fit</span><span lang="fr">Les outils existants ne collent pas</span></h3>
+        <p><span lang="en">Postgres-only, or a server to deploy, or a SaaS you have to send your production data to, or abandoned for years.</span><span lang="fr">Postgres-only, ou un serveur à déployer, ou un SaaS à qui envoyer ta prod, ou abandonnés depuis des années.</span></p>
       </div>
       <div class="card reveal">
         <span class="icon">🐘</span>
-        <h3>La mémoire explose sur les gros dumps</h3>
-        <p>Charger 30 Go en RAM pour les transformer, ce n'est tenable ni sur un laptop ni en CI.</p>
+        <h3><span lang="en">Memory blows up on large dumps</span><span lang="fr">La mémoire explose sur les gros dumps</span></h3>
+        <p><span lang="en">Loading 30 GB into RAM to transform it works neither on a laptop nor in CI.</span><span lang="fr">Charger 30 Go en RAM pour les transformer, ce n'est tenable ni sur un laptop ni en CI.</span></p>
       </div>
     </div>
   </div>
@@ -401,118 +435,118 @@
 <section id="solution">
   <div class="wrap">
     <div class="section-head reveal">
-      <div class="kicker">Ce que tu gagnes</div>
-      <h2>Un seul outil, une seule commande,<br>zéro donnée réelle qui survit</h2>
-      <p>Sosie a été conçu pour que la bonne pratique soit aussi le chemin le plus court.</p>
+      <div class="kicker"><span lang="en">What you get</span><span lang="fr">Ce que tu gagnes</span></div>
+      <h2><span lang="en">One tool, one command,<br>zero real data surviving</span><span lang="fr">Un seul outil, une seule commande,<br>zéro donnée réelle qui survit</span></h2>
+      <p><span lang="en">Sosie is designed so that the right practice is also the shortest path.</span><span lang="fr">Sosie a été conçu pour que la bonne pratique soit aussi le chemin le plus court.</span></p>
     </div>
     <div class="grid gain">
       <div class="card reveal">
-        <h3>Sûr par défaut</h3>
-        <p>L'outil <strong>refuse de tourner</strong> si une colonne qui ressemble à une donnée personnelle n'a pas de règle explicite. L'oubli devient impossible par construction, pas par discipline.</p>
+        <h3><span lang="en">Safe by default</span><span lang="fr">Sûr par défaut</span></h3>
+        <p><span lang="en">The tool <strong>refuses to run</strong> if a column that looks like personal data has no explicit rule. Forgetting becomes impossible by design, not by discipline.</span><span lang="fr">L'outil <strong>refuse de tourner</strong> si une colonne qui ressemble à une donnée personnelle n'a pas de règle explicite. L'oubli devient impossible par construction, pas par discipline.</span></p>
       </div>
       <div class="card reveal">
-        <h3>Setup en quelques minutes</h3>
-        <p><code>sosie init</code> scanne le schéma <strong>et le contenu</strong> de ton dump, puis génère une config déjà remplie pour tout ce qui est évident. Tu ne tranches que les cas ambigus.</p>
+        <h3><span lang="en">Set up in minutes</span><span lang="fr">Setup en quelques minutes</span></h3>
+        <p><span lang="en"><code>sosie init</code> scans the schema <strong>and the content</strong> of your dump, then generates a config already filled in for everything obvious. You only decide the ambiguous cases.</span><span lang="fr"><code>sosie init</code> scanne le schéma <strong>et le contenu</strong> de ton dump, puis génère une config déjà remplie pour tout ce qui est évident. Tu ne tranches que les cas ambigus.</span></p>
       </div>
       <div class="card reveal">
-        <h3>Mémoire constante, quelle que soit la taille</h3>
-        <p>Streaming statement par statement : un dump de plusieurs dizaines de Go passe avec quelques Mo de RAM. Sur un laptop, en CI, dans un cron.</p>
+        <h3><span lang="en">Streaming: the dump is never loaded into memory</span><span lang="fr">Streaming : le dump n'est jamais chargé en mémoire</span></h3>
+        <p><span lang="en">Processed statement by statement: 1 GB and 17 million rows in ~30 s, under 100 MB of RAM. Only the deduplication of <code>UNIQUE</code> columns grows with the data. On a laptop, in CI, in a cron job.</span><span lang="fr">Traité instruction par instruction : 1 Go et 17 millions de lignes en ~30 s, sous 100 Mo de RAM. Seule la déduplication des colonnes <code>UNIQUE</code> grandit avec les données. Sur un laptop, en CI, dans un cron.</span></p>
       </div>
       <div class="card reveal">
-        <h3>Des faux qui ont l'air vrais</h3>
-        <p>IBAN à clé de contrôle valide, téléphones au bon format, adresses fr_FR crédibles, dates plausibles. <strong>Ton appli ne se plaint jamais</strong> d'un format invalide.</p>
+        <h3><span lang="en">Fakes that look real</span><span lang="fr">Des faux qui ont l'air vrais</span></h3>
+        <p><span lang="en">IBANs with a valid checksum, well-formed phone numbers, credible fr_FR addresses, plausible dates. <strong>Your app never complains</strong> about an invalid format.</span><span lang="fr">IBAN à clé de contrôle valide, téléphones au bon format, adresses fr_FR crédibles, dates plausibles. <strong>Ton appli ne se plaint jamais</strong> d'un format invalide.</span></p>
       </div>
       <div class="card reveal">
-        <h3>Cohérence garantie entre les tables</h3>
-        <p>En mode <code>pseudonymize</code>, la même valeur d'entrée donne toujours la même fausse valeur : dans toutes les tables, et d'un export à l'autre. Les jointures tiennent.</p>
+        <h3><span lang="en">Consistency across tables</span><span lang="fr">Cohérence garantie entre les tables</span></h3>
+        <p><span lang="en">In <code>pseudonymize</code> mode, the same input value always gives the same fake value: in every table, and from one export to the next. Joins hold.</span><span lang="fr">En mode <code>pseudonymize</code>, la même valeur d'entrée donne toujours la même fausse valeur : dans toutes les tables, et d'un export à l'autre. Les jointures tiennent.</span></p>
       </div>
       <div class="card reveal">
-        <h3>Unicité respectée</h3>
-        <p>Les colonnes <code>UNIQUE</code> et <code>PRIMARY KEY</code> restent uniques après transformation. L'import passe du premier coup, sans erreur de doublon.</p>
+        <h3><span lang="en">Uniqueness respected</span><span lang="fr">Unicité respectée</span></h3>
+        <p><span lang="en"><code>UNIQUE</code> and <code>PRIMARY KEY</code> columns stay unique after transformation. The import succeeds on the first try, with no duplicate errors.</span><span lang="fr">Les colonnes <code>UNIQUE</code> et <code>PRIMARY KEY</code> restent uniques après transformation. L'import passe du premier coup, sans erreur de doublon.</span></p>
       </div>
       <div class="card reveal">
-        <h3>Rapport sans surprise</h3>
-        <p>Un compte-rendu clair en fin d'exécution et un JSON dans <code>.sosie/</code> : uniquement des compteurs, <strong>jamais une valeur réelle</strong>, même par accident. Auditable, versionnable.</p>
+        <h3><span lang="en">No-surprise report</span><span lang="fr">Rapport sans surprise</span></h3>
+        <p><span lang="en">A clear summary at the end of the run and a JSON file in <code>.sosie/</code>: counters only, <strong>never a real value</strong>, not even by accident. Auditable, versionable.</span><span lang="fr">Un compte-rendu clair en fin d'exécution et un JSON dans <code>.sosie/</code> : uniquement des compteurs, <strong>jamais une valeur réelle</strong>, même par accident. Auditable, versionnable.</span></p>
       </div>
       <div class="card reveal">
-        <h3>Zéro infra</h3>
-        <p>Un binaire, pas de serveur, pas de compte, pas d'upload. Ça se pipe comme <code>mysqldump</code> lui-même, là où tourne déjà ton dump.</p>
+        <h3><span lang="en">Zero infrastructure</span><span lang="fr">Zéro infra</span></h3>
+        <p><span lang="en">A single binary, no server, no account, no upload. It pipes like <code>mysqldump</code> itself, wherever your dump already runs.</span><span lang="fr">Un binaire, pas de serveur, pas de compte, pas d'upload. Ça se pipe comme <code>mysqldump</code> lui-même, là où tourne déjà ton dump.</span></p>
       </div>
       <div class="card reveal">
-        <h3>Round-trip byte à byte</h3>
-        <p>Tout ce qui n'est pas transformé ressort strictement identique : commentaires, options, <code>CREATE TABLE</code>. Le dump reste un vrai dump <code>mysqldump</code>.</p>
+        <h3><span lang="en">Byte-exact round-trip</span><span lang="fr">Round-trip byte à byte</span></h3>
+        <p><span lang="en">Everything that isn't transformed comes out strictly identical: comments, options, <code>CREATE TABLE</code>. The dump stays a real <code>mysqldump</code> dump.</span><span lang="fr">Tout ce qui n'est pas transformé ressort strictement identique : commentaires, options, <code>CREATE TABLE</code>. Le dump reste un vrai dump <code>mysqldump</code>.</span></p>
       </div>
     </div>
   </div>
 </section>
 
-<section id="pour-qui" class="alt">
+<section id="for-whom" class="alt">
   <div class="wrap">
     <div class="section-head reveal">
-      <div class="kicker">Pour qui</div>
-      <h2>Tout le monde y gagne</h2>
-      <p>Le dev va plus vite, le lead dort mieux, le DPO a enfin quelque chose à montrer.</p>
+      <div class="kicker"><span lang="en">Who it's for</span><span lang="fr">Pour qui</span></div>
+      <h2><span lang="en">Everyone wins</span><span lang="fr">Tout le monde y gagne</span></h2>
+      <p><span lang="en">The developer moves faster, the lead sleeps better, the DPO finally has something to show.</span><span lang="fr">Le dev va plus vite, le lead dort mieux, le DPO a enfin quelque chose à montrer.</span></p>
     </div>
     <div class="grid">
       <div class="card persona reveal">
-        <span class="tag">DÉVELOPPEUR</span>
-        <h3>Reproduis le bug en 5 minutes, pas en 2 jours</h3>
+        <span class="tag"><span lang="en">DEVELOPER</span><span lang="fr">DÉVELOPPEUR</span></span>
+        <h3><span lang="en">Reproduce the bug in 5 minutes, not 2 days</span><span lang="fr">Reproduis le bug en 5 minutes, pas en 2 jours</span></h3>
         <ul>
-          <li>Les vrais volumes, les vrais cas tordus, les vraies distributions.</li>
-          <li>Une commande à lancer, un fichier à importer.</li>
-          <li>Plus jamais « ça marche chez moi ».</li>
+          <li><span lang="en">Real volumes, real twisted cases, real distributions.</span><span lang="fr">Les vrais volumes, les vrais cas tordus, les vraies distributions.</span></li>
+          <li><span lang="en">One command to run, one file to import.</span><span lang="fr">Une commande à lancer, un fichier à importer.</span></li>
+          <li><span lang="en">No more “works on my machine”.</span><span lang="fr">Plus jamais « ça marche chez moi ».</span></li>
         </ul>
       </div>
       <div class="card persona reveal">
-        <span class="tag">LEAD TECH / OPS</span>
-        <h3>Un dump de dev frais chaque nuit, en CI</h3>
+        <span class="tag"><span lang="en">TECH LEAD / OPS</span><span lang="fr">LEAD TECH / OPS</span></span>
+        <h3><span lang="en">A fresh dev dump every night, in CI</span><span lang="fr">Un dump de dev frais chaque nuit, en CI</span></h3>
         <ul>
-          <li>Le <code>sosie check</code> casse le pipeline si une nouvelle colonne sensible apparaît.</li>
-          <li>Config en YAML, versionnée avec le code, relue en merge request.</li>
-          <li>Barre de progression masquée automatiquement hors terminal.</li>
+          <li><span lang="en"><code>sosie check</code> breaks the pipeline if a new sensitive column appears.</span><span lang="fr">Le <code>sosie check</code> casse le pipeline si une nouvelle colonne sensible apparaît.</span></li>
+          <li><span lang="en">YAML config, versioned with the code, reviewed in merge requests.</span><span lang="fr">Config en YAML, versionnée avec le code, relue en merge request.</span></li>
+          <li><span lang="en">Progress bar hidden automatically outside a terminal.</span><span lang="fr">Barre de progression masquée automatiquement hors terminal.</span></li>
         </ul>
       </div>
       <div class="card persona reveal">
-        <span class="tag">DPO / RSSI</span>
-        <h3>Une preuve, pas une promesse</h3>
+        <span class="tag"><span lang="en">DPO / CISO</span><span lang="fr">DPO / RSSI</span></span>
+        <h3><span lang="en">Proof, not a promise</span><span lang="fr">Une preuve, pas une promesse</span></h3>
         <ul>
-          <li>Politique « fail si non classifié » : rien ne sort sans décision explicite.</li>
-          <li>Rapport de couverture par table et par colonne, sans aucune valeur réelle.</li>
-          <li>Les données ne quittent jamais ton infra : pas de SaaS, pas d'upload.</li>
+          <li><span lang="en">“Fail if unclassified” policy: nothing goes out without an explicit decision.</span><span lang="fr">Politique « fail si non classifié » : rien ne sort sans décision explicite.</span></li>
+          <li><span lang="en">Coverage report per table and per column, without any real value.</span><span lang="fr">Rapport de couverture par table et par colonne, sans aucune valeur réelle.</span></li>
+          <li><span lang="en">Data never leaves your infrastructure: no SaaS, no upload.</span><span lang="fr">Les données ne quittent jamais ton infra : pas de SaaS, pas d'upload.</span></li>
         </ul>
       </div>
     </div>
   </div>
 </section>
 
-<section id="comment">
+<section id="how">
   <div class="wrap">
     <div class="section-head reveal">
-      <div class="kicker">Comment ça marche</div>
-      <h2>Cinq étapes, une seule où tu réfléchis</h2>
-      <p>Un flux qui se pipe comme <code>mysqldump</code> lui-même.</p>
+      <div class="kicker"><span lang="en">How it works</span><span lang="fr">Comment ça marche</span></div>
+      <h2><span lang="en">Five steps, only one where you think</span><span lang="fr">Cinq étapes, une seule où tu réfléchis</span></h2>
+      <p><span lang="en">A stream that pipes like <code>mysqldump</code> itself.</span><span lang="fr">Un flux qui se pipe comme <code>mysqldump</code> lui-même.</span></p>
     </div>
     <div class="steps">
       <div class="step reveal">
-        <h4>Dump ta base</h4>
+        <h4><span lang="en">Dump your database</span><span lang="fr">Dump ta base</span></h4>
         <p><code>mysqldump shop &gt; dump.sql</code></p>
       </div>
       <div class="step reveal">
-        <h4>Génère une config</h4>
-        <p><code>sosie init</code> analyse schéma et contenu, remplit les règles évidentes, liste le reste dans <code>review:</code>.</p>
+        <h4><span lang="en">Generate a config</span><span lang="fr">Génère une config</span></h4>
+        <p><span lang="en"><code>sosie init</code> analyzes schema and content, fills in the obvious rules, lists the rest under <code>review:</code>.</span><span lang="fr"><code>sosie init</code> analyse schéma et contenu, remplit les règles évidentes, liste le reste dans <code>review:</code>.</span></p>
       </div>
       <div class="step reveal">
-        <h4>Tranche les cas ambigus</h4>
-        <p>Une colonne <code>notes</code> ? <code>null</code>. Un <code>product.name</code> ? <code>keep</code>. Quelques lignes de YAML.</p>
-        <span class="human">← le seul moment où un humain intervient</span>
+        <h4><span lang="en">Decide the ambiguous cases</span><span lang="fr">Tranche les cas ambigus</span></h4>
+        <p><span lang="en">A <code>notes</code> column? <code>null</code>. A <code>product.name</code>? <code>keep</code>. A few lines of YAML.</span><span lang="fr">Une colonne <code>notes</code> ? <code>null</code>. Un <code>product.name</code> ? <code>keep</code>. Quelques lignes de YAML.</span></p>
+        <span class="human"><span lang="en">← the only moment a human steps in</span><span lang="fr">← le seul moment où un humain intervient</span></span>
       </div>
       <div class="step reveal">
-        <h4>Vérifie</h4>
-        <p><code>sosie check</code> confirme que tout est couvert, avant d'écrire le moindre octet. Idéal en CI.</p>
+        <h4><span lang="en">Check</span><span lang="fr">Vérifie</span></h4>
+        <p><span lang="en"><code>sosie check</code> confirms everything is covered, before a single byte is written. Ideal in CI.</span><span lang="fr"><code>sosie check</code> confirme que tout est couvert, avant d'écrire le moindre octet. Idéal en CI.</span></p>
       </div>
       <div class="step reveal">
-        <h4>Transforme</h4>
-        <p><code>sosie transform</code> produit un dump SQL valide, prêt à importer. Rapport à la fin.</p>
+        <h4><span lang="en">Transform</span><span lang="fr">Transforme</span></h4>
+        <p><span lang="en"><code>sosie transform</code> produces a valid SQL dump, ready to import. Report at the end.</span><span lang="fr"><code>sosie transform</code> produit un dump SQL valide, prêt à importer. Rapport à la fin.</span></p>
       </div>
     </div>
   </div>
@@ -521,59 +555,61 @@
 <section id="presets" class="alt">
   <div class="wrap">
     <div class="section-head reveal">
-      <div class="kicker">Presets embarqués</div>
-      <h2>Treize transformateurs, déterministes, prêts à l'emploi</h2>
-      <p>Chaque preset respecte le format d'entrée, la taille de la colonne et les contraintes du schéma.</p>
+      <div class="kicker"><span lang="en">Built-in presets</span><span lang="fr">Presets embarqués</span></div>
+      <h2><span lang="en">Thirteen deterministic transformers, ready to use</span><span lang="fr">Treize transformateurs, déterministes, prêts à l'emploi</span></h2>
+      <p><span lang="en">Each preset respects the input format, the column size and the schema constraints.</span><span lang="fr">Chaque preset respecte le format d'entrée, la taille de la colonne et les contraintes du schéma.</span></p>
     </div>
     <div class="chips reveal">
-      <span class="chip">email<small>prenom.nom@example.org</small></span>
+      <span class="chip">email<small><span lang="en">firstname.lastname.&lt;hex&gt;@example.org</span><span lang="fr">prenom.nom.&lt;hex&gt;@example.org</span></small></span>
       <span class="chip">first_name</span>
       <span class="chip">last_name</span>
       <span class="chip">full_name</span>
-      <span class="chip">phone<small>même format, +33 ou 06</small></span>
-      <span class="chip">date_shift<small>± N jours</small></span>
-      <span class="chip">iban<small>clé mod 97 valide</small></span>
+      <span class="chip">phone<small><span lang="en">same format, +33 or 06</span><span lang="fr">même format, +33 ou 06</span></small></span>
+      <span class="chip">date_shift<small><span lang="en">± N days</span><span lang="fr">± N jours</span></small></span>
+      <span class="chip">iban<small><span lang="en">valid mod 97 checksum</span><span lang="fr">clé mod 97 valide</span></small></span>
       <span class="chip">bic</span>
       <span class="chip">address_line</span>
       <span class="chip">city</span>
-      <span class="chip">postcode<small>garde le département</small></span>
-      <span class="chip">ip<small>plages RFC 5737</small></span>
-      <span class="chip">hash<small>HMAC pour les IDs opaques</small></span>
+      <span class="chip">postcode<small><span lang="en">keeps the department</span><span lang="fr">garde le département</span></small></span>
+      <span class="chip">ip<small><span lang="en">RFC 5737 ranges</span><span lang="fr">plages RFC 5737</span></small></span>
+      <span class="chip">hash<small><span lang="en">HMAC for opaque IDs</span><span lang="fr">HMAC pour les IDs opaques</span></small></span>
     </div>
     <p class="presets-note">
-      Plus trois règles universelles : <code>keep</code>, <code>null</code> et <code>constant("…")</code>.
-      Une faute de frappe dans un nom de preset ? Sosie refuse la config et te suggère le bon.
+      <span lang="en">Plus three universal rules: <code>keep</code>, <code>null</code> and <code>constant("…")</code>.
+      A typo in a preset name? Sosie rejects the config and suggests the right one.</span>
+      <span lang="fr">Plus trois règles universelles : <code>keep</code>, <code>null</code> et <code>constant("…")</code>.
+      Une faute de frappe dans un nom de preset ? Sosie refuse la config et te suggère le bon.</span>
     </p>
   </div>
 </section>
 
-<section id="comparatif">
+<section id="comparison">
   <div class="wrap">
     <div class="section-head reveal">
-      <div class="kicker">Comparatif</div>
-      <h2>Pourquoi pas juste… autre chose ?</h2>
-      <p>Parce que chaque alternative sacrifie soit le réalisme, soit la sécurité, soit ton temps.</p>
+      <div class="kicker"><span lang="en">Comparison</span><span lang="fr">Comparatif</span></div>
+      <h2><span lang="en">Why not just… something else?</span><span lang="fr">Pourquoi pas juste… autre chose ?</span></h2>
+      <p><span lang="en">Because every alternative sacrifices either realism, security, or your time.</span><span lang="fr">Parce que chaque alternative sacrifie soit le réalisme, soit la sécurité, soit ton temps.</span></p>
     </div>
     <div class="compare-wrap reveal">
       <table class="compare">
         <thead>
           <tr>
             <th></th>
-            <th>Dump brut</th>
+            <th><span lang="en">Raw dump</span><span lang="fr">Dump brut</span></th>
             <th>Fixtures</th>
-            <th>Script SQL maison</th>
+            <th><span lang="en">Homemade SQL script</span><span lang="fr">Script SQL maison</span></th>
             <th class="sosie">◆ Sosie</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td>Données réalistes (volume, cas limites)</td><td class="y">✓</td><td class="n">✗</td><td class="y">✓</td><td class="sosie y">✓</td></tr>
-          <tr><td>Conforme RGPD</td><td class="n">✗</td><td class="y">✓</td><td class="m">si rien n'est oublié</td><td class="sosie y">✓ fail si oubli</td></tr>
-          <tr><td>Détecte une nouvelle colonne sensible</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="sosie y">✓</td></tr>
-          <tr><td>Temps de mise en place</td><td class="y">0</td><td class="n">jours</td><td class="n">jours</td><td class="sosie y">minutes</td></tr>
-          <tr><td>Maintenance à chaque migration</td><td class="y">aucune</td><td class="n">lourde</td><td class="n">lourde</td><td class="sosie y">1 ligne de YAML</td></tr>
-          <tr><td>Gros volumes (10+ Go)</td><td class="y">✓</td><td class="n">n/a</td><td class="m">lent</td><td class="sosie y">streaming</td></tr>
-          <tr><td>Cohérence inter-tables</td><td class="y">✓</td><td class="m">à la main</td><td class="m">à la main</td><td class="sosie y">pseudonymize</td></tr>
-          <tr><td>Infra à déployer</td><td class="y">aucune</td><td class="y">aucune</td><td class="y">aucune</td><td class="sosie y">aucune</td></tr>
+          <tr><td><span lang="en">Realistic data (volume, edge cases)</span><span lang="fr">Données réalistes (volume, cas limites)</span></td><td class="y">✓</td><td class="n">✗</td><td class="y">✓</td><td class="sosie y">✓</td></tr>
+          <tr><td><span lang="en">GDPR compliant</span><span lang="fr">Conforme RGPD</span></td><td class="n">✗</td><td class="y">✓</td><td class="m"><span lang="en">if nothing is forgotten</span><span lang="fr">si rien n'est oublié</span></td><td class="sosie y"><span lang="en">✓ fails if forgotten</span><span lang="fr">✓ fail si oubli</span></td></tr>
+          <tr><td><span lang="en">Detects a new sensitive column</span><span lang="fr">Détecte une nouvelle colonne sensible</span></td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="sosie y">✓</td></tr>
+          <tr><td><span lang="en">Setup time</span><span lang="fr">Temps de mise en place</span></td><td class="y">0</td><td class="n"><span lang="en">days</span><span lang="fr">jours</span></td><td class="n"><span lang="en">days</span><span lang="fr">jours</span></td><td class="sosie y">minutes</td></tr>
+          <tr><td><span lang="en">Maintenance on each migration</span><span lang="fr">Maintenance à chaque migration</span></td><td class="y"><span lang="en">none</span><span lang="fr">aucune</span></td><td class="n"><span lang="en">heavy</span><span lang="fr">lourde</span></td><td class="n"><span lang="en">heavy</span><span lang="fr">lourde</span></td><td class="sosie y"><span lang="en">1 line of YAML</span><span lang="fr">1 ligne de YAML</span></td></tr>
+          <tr><td><span lang="en">Large volumes (10+ GB)</span><span lang="fr">Gros volumes (10+ Go)</span></td><td class="y">✓</td><td class="n">n/a</td><td class="m"><span lang="en">slow</span><span lang="fr">lent</span></td><td class="sosie y">streaming</td></tr>
+          <tr><td><span lang="en">Cross-table consistency</span><span lang="fr">Cohérence inter-tables</span></td><td class="y">✓</td><td class="m"><span lang="en">by hand</span><span lang="fr">à la main</span></td><td class="m"><span lang="en">by hand</span><span lang="fr">à la main</span></td><td class="sosie y">pseudonymize</td></tr>
+          <tr><td><span lang="en">Infrastructure to deploy</span><span lang="fr">Infra à déployer</span></td><td class="y"><span lang="en">none</span><span lang="fr">aucune</span></td><td class="y"><span lang="en">none</span><span lang="fr">aucune</span></td><td class="y"><span lang="en">none</span><span lang="fr">aucune</span></td><td class="sosie y"><span lang="en">none</span><span lang="fr">aucune</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -582,34 +618,62 @@
 
 <section class="final alt">
   <div class="wrap">
-    <h2 class="reveal">Ta prod n'a rien à faire sur ton laptop.</h2>
-    <p class="reveal">Sosie s'en assure, en une commande, sans que tu aies à y penser deux fois. Essaie-le sur ton prochain dump.</p>
+    <h2 class="reveal"><span lang="en">Your production data has no business on your laptop.</span><span lang="fr">Ta prod n'a rien à faire sur ton laptop.</span></h2>
+    <p class="reveal"><span lang="en">Sosie makes sure of it, in one command, without you having to think twice. Try it on your next dump.</span><span lang="fr">Sosie s'en assure, en une commande, sans que tu aies à y penser deux fois. Essaie-le sur ton prochain dump.</span></p>
     <div class="install reveal">
       <div><span class="prompt">$ </span>git clone https://gitlab.com/mlejeune/sosie.git &amp;&amp; cd sosie</div>
       <div><span class="prompt">$ </span>cargo build --release</div>
       <div><span class="prompt">$ </span>./target/release/sosie init --from dump.sql --out sosie.yaml</div>
       <div><span class="prompt">$ </span>./target/release/sosie check --from dump.sql --config sosie.yaml</div>
-      <div><span class="c"># check OK : 6 tables, aucune colonne sensible sans règle.</span></div>
+      <div><span class="c"># check OK: 6 tables, no sensitive column without a rule.</span></div>
     </div>
     <div class="cta-row reveal">
-      <a class="btn btn-primary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener">Commencer maintenant</a>
-      <a class="btn btn-secondary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/CONFIGURATION.md" target="_blank" rel="noopener">Voir la configuration</a>
+      <a class="btn btn-primary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Get started now</span><span lang="fr">Commencer maintenant</span></a>
+      <a class="btn btn-secondary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/CONFIGURATION.md" target="_blank" rel="noopener"><span lang="en">See the configuration</span><span lang="fr">Voir la configuration</span></a>
     </div>
   </div>
 </section>
 
 <footer>
   <div class="wrap">
-    Sosie — open source, en développement actif (v0.1).
-    <a href="https://gitlab.com/mlejeune/sosie" target="_blank" rel="noopener">Code source</a> ·
-    <a href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener">Guide d'utilisation</a> ·
+    <span lang="en">Sosie — open source, under active development (v0.1).</span><span lang="fr">Sosie — open source, en développement actif (v0.1).</span>
+    <a href="https://gitlab.com/mlejeune/sosie" target="_blank" rel="noopener"><span lang="en">Source code</span><span lang="fr">Code source</span></a> ·
+    <a href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Usage guide</span><span lang="fr">Guide d'utilisation</span></a> ·
     <a href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/CONFIGURATION.md" target="_blank" rel="noopener">Configuration</a> ·
-    <a href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/CAHIER_DES_CHARGES.md" target="_blank" rel="noopener">Vision du projet</a>
+    <a href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/CAHIER_DES_CHARGES.md" target="_blank" rel="noopener"><span lang="en">Project vision</span><span lang="fr">Vision du projet</span></a>
   </div>
 </footer>
 
 <script>
-  // Apparition progressive des sections au scroll.
+  // Language toggle: swaps the visible text, the tab title and the description.
+  (function () {
+    var meta = {
+      en: {
+        title: 'Sosie — clone your MySQL prod without the personal data',
+        description: 'Sosie turns a mysqldump dump into a faithful copy of your production database, without a single real piece of personal data surviving. One command, streaming, safe by default.'
+      },
+      fr: {
+        title: 'Sosie — clone ta prod MySQL sans les données perso',
+        description: "Sosie transforme un dump mysqldump en une copie fidèle de ta prod, sans qu'une seule donnée personnelle réelle n'y survive. Une commande, en streaming, sûr par défaut."
+      }
+    };
+    var descTag = document.querySelector('meta[name="description"]');
+    function apply(lang) {
+      document.documentElement.lang = lang;
+      document.title = meta[lang].title;
+      if (descTag) descTag.setAttribute('content', meta[lang].description);
+    }
+    document.querySelectorAll('.lang-switch button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var lang = b.getAttribute('data-lang');
+        apply(lang);
+        try { localStorage.setItem('sosie-lang', lang); } catch (e) {}
+      });
+    });
+    apply(document.documentElement.lang === 'fr' ? 'fr' : 'en');
+  })();
+
+  // Reveal sections progressively on scroll.
   (function () {
     var els = document.querySelectorAll('.reveal');
     if (!('IntersectionObserver' in window)) { els.forEach(function (e) { e.classList.add('in'); }); return; }
@@ -619,7 +683,7 @@
     els.forEach(function (e) { io.observe(e); });
   })();
 
-  // Terminal du hero : les lignes apparaissent une à une, la barre se remplit.
+  // Hero terminal: lines appear one by one, the progress bar fills up.
   (function () {
     var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     var lines = Array.prototype.slice.call(document.querySelectorAll('#term-body .line'));
@@ -640,7 +704,7 @@
         var t = setInterval(function () {
           n++;
           bar.textContent = full.slice(0, n);
-          barLine.innerHTML = bar.outerHTML + ' ' + Math.round(n / total * 100) + '% · ' + (n / total).toFixed(1) + ' GB · 25 MB/s · ETA ' + Math.max(0, 40 - Math.round(n / total * 40)) + 's · ' + (n < total / 3 ? 'user' : n < total * 2 / 3 ? 'address' : 'order');
+          barLine.innerHTML = bar.outerHTML + ' ' + Math.round(n / total * 100) + '% · ' + (n / total).toFixed(1) + ' GB · 37 MB/s · ETA ' + Math.max(0, 30 - Math.round(n / total * 30)) + 's · ' + (n < total / 3 ? 'user' : n < total * 2 / 3 ? 'address' : 'order');
           bar = barLine.querySelector('.bar');
           if (n >= total) { clearInterval(t); barLine.innerHTML = bar.outerHTML + tail; setTimeout(next, 250); }
         }, 45);

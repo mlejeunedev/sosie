@@ -1,198 +1,198 @@
-# Sosie — Plan de construction détaillé (v0.1)
+# Sosie — Detailed build plan (v0.1)
 
-Objectif de la v0.1 : `sosie transform` fonctionne sur un vrai dump `mysqldump`, avec `init` et `check`. Tout ce qui n'est pas listé ici attend la v0.2.
+Goal of v0.1: `sosie transform` works on a real `mysqldump` dump, with `init` and `check`. Everything not listed here waits for v0.2.
 
-Chaque étape a un **critère de sortie** : tant qu'il n'est pas vert, on ne passe pas à la suivante. Les durées sont indicatives pour des sessions de soirée/week-end.
-
----
-
-## Étape 0 — Squelette du projet (1 soirée)
-
-- [ ] `../Cargo.toml` avec les dépendances de base (clap, anyhow, thiserror, serde, serde_yaml, hmac, sha2, rand_chacha, rand, memchr ; dev : insta, assert_cmd).
-- [ ] `../src/lib.rs` qui déclare les modules : `dump`, `config`, `transform`, `presets`, `scan`, `report`.
-- [ ] `../src/main.rs` avec clap et les sous-commandes vides : `transform`, `init`, `check`, `presets`. Chacune affiche "not implemented" et retourne un code d'erreur.
-- [ ] `../fixtures` : copier `examples/dumps/*.sql` et `examples/configs/*.yaml`.
-- [ ] CI GitHub Actions : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
-- [ ] `rust-toolchain.toml` pour figer la version.
-
-**Sortie** : `cargo run -- transform` compile, affiche l'aide, `cargo test` passe (0 tests).
+Each step has an **exit criterion**: as long as it isn't green, we don't move on to the next one. Durations are indicative, for evening/weekend sessions.
 
 ---
 
-## Étape 1 — Le modèle d'événements (1 soirée)
+## Step 0 — Project skeleton (1 evening)
 
-Fichier : `src/dump/mod.rs`
+- [ ] `../Cargo.toml` with the base dependencies (clap, anyhow, thiserror, serde, serde_yaml, hmac, sha2, rand_chacha, rand, memchr; dev: insta, assert_cmd).
+- [ ] `../src/lib.rs` declaring the modules: `dump`, `config`, `transform`, `presets`, `scan`, `report`.
+- [ ] `../src/main.rs` with clap and empty subcommands: `transform`, `init`, `check`, `presets`. Each prints "not implemented" and returns an error code.
+- [ ] `../fixtures`: copy `examples/dumps/*.sql` and `examples/configs/*.yaml`.
+- [ ] GitHub Actions CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
+- [ ] `rust-toolchain.toml` to pin the version.
+
+**Exit**: `cargo run -- transform` compiles, prints the help, `cargo test` passes (0 tests).
+
+---
+
+## Step 1 — The event model (1 evening)
+
+File: `src/dump/mod.rs`
 
 - [ ] `pub struct Column { name: String, sql_type: SqlType, nullable: bool, max_len: Option<u32>, generated: bool }`
 - [ ] `pub enum SqlType { Int, Decimal, Float, Char, Text, Blob, Date, DateTime, Json, Enum, Set, Bit, Other(String) }`
 - [ ] `pub struct Table { name: String, columns: Vec<Column> }`
 - [ ] `pub enum Value<'a> { Null, Raw(&'a [u8]), Str(Cow<'a, [u8]>) }`
-  - `Raw` = tout ce qui n'est pas une chaîne SQL (nombres, `0x…`, `_binary '…'`, `b'…'`, `NULL` traité à part). Copié tel quel, jamais transformé.
-  - `Str` = contenu **désescapé** d'une chaîne `'…'`. Le sérialiseur ré-échappe.
+  - `Raw` = everything that isn't an SQL string (numbers, `0x…`, `_binary '…'`, `b'…'`, `NULL` handled separately). Copied as is, never transformed.
+  - `Str` = **unescaped** content of a `'…'` string. The serializer re-escapes it.
 - [ ] `pub enum Event<'a> { Raw(&'a [u8]), TableSchema(Table), RowsBegin { table: String, columns: Option<Vec<String>> }, Row(Vec<Value<'a>>), RowsEnd }`
-  - `RowsBegin.columns` : `Some` si l'`INSERT` a une liste de colonnes explicite (cas des colonnes générées).
+  - `RowsBegin.columns`: `Some` if the `INSERT` has an explicit column list (the generated-columns case).
 - [ ] `pub trait DumpParser { fn next_event(&mut self) -> Result<Option<Event<'_>>> }`
 - [ ] `pub trait DumpWriter { fn write_event(&mut self, ev: &Event) -> Result<()> }`
 
-**Sortie** : ça compile, et les types sont documentés (`///`) parce que tu les reliras dans trois mois.
+**Exit**: it compiles, and the types are documented (`///`) because you'll reread them in three months.
 
 ---
 
-## Étape 2 — Parseur `mysqldump` : le round-trip (3 à 4 soirées, le cœur du projet)
+## Step 2 — `mysqldump` parser: the round-trip (3 to 4 evenings, the heart of the project)
 
-Fichier : `src/dump/mysql.rs`
+File: `src/dump/mysql.rs`
 
-### 2a. Lecture par blocs
-- [ ] Lire `stdin`/fichier avec un `BufReader` de 1 Mo et un buffer interne qui grandit uniquement si une instruction ne tient pas (un `INSERT` étendu peut faire 16 Mo).
-- [ ] Découper le flux en **instructions** terminées par `;` suivi de fin de ligne, en tenant compte des chaînes (`'…'`, `"…"`), des commentaires (`-- …`, `/* … */`, `/*!40101 … */`) et de `DELIMITER ;;`.
-- [ ] Tout ce qui n'est pas `CREATE TABLE` ni `INSERT INTO` → `Event::Raw`.
+### 2a. Block reading
+- [ ] Read `stdin`/file with a 1 MB `BufReader` and an internal buffer that only grows if a statement doesn't fit (an extended `INSERT` can be 16 MB).
+- [ ] Split the stream into **statements** terminated by `;` followed by a line ending, taking into account strings (`'…'`, `"…"`), comments (`-- …`, `/* … */`, `/*!40101 … */`) and `DELIMITER ;;`.
+- [ ] Everything that isn't `CREATE TABLE` or `INSERT INTO` → `Event::Raw`.
 
 ### 2b. `CREATE TABLE`
-- [ ] Extraire le nom (backticks, éventuellement `schema`.`table`).
-- [ ] Pour chaque ligne de définition commençant par un backtick : nom, type, longueur `(n)`, `NOT NULL`, `GENERATED ALWAYS`.
-- [ ] Ignorer `PRIMARY KEY`, `KEY`, `UNIQUE`, `CONSTRAINT`, `CHECK`, `FULLTEXT` — sauf mémoriser les `FOREIGN KEY` dans `Table.foreign_keys` (utile en v0.2, coût nul maintenant).
-- [ ] L'instruction complète est **aussi** conservée en `Raw` pour être réécrite à l'identique : on ne régénère jamais un `CREATE TABLE`.
+- [ ] Extract the name (backticks, possibly `schema`.`table`).
+- [ ] For each definition line starting with a backtick: name, type, length `(n)`, `NOT NULL`, `GENERATED ALWAYS`.
+- [ ] Ignore `PRIMARY KEY`, `KEY`, `UNIQUE`, `CONSTRAINT`, `CHECK`, `FULLTEXT` — except record `FOREIGN KEY`s in `Table.foreign_keys` (useful in v0.2, zero cost now).
+- [ ] The full statement is **also** kept as `Raw` to be rewritten identically: we never regenerate a `CREATE TABLE`.
 
 ### 2c. `INSERT INTO`
-- [ ] Nom de table, liste de colonnes optionnelle `(\`a\`, \`b\`)`.
-- [ ] Tokenizer de `VALUES` : machine à états `Outside`, `InSingleQuote`, `Escape`, `InHex`, `InBinaryPrefix`. Séparateurs `,` et tuples `( … )`.
-- [ ] Désescaper : `\'`, `\"`, `\\`, `\n`, `\r`, `\t`, `\0`, `\Z`, `\b`, `''`.
-- [ ] Émettre `RowsBegin`, puis un `Row` par tuple, puis `RowsEnd`.
-- [ ] Le préfixe `INSERT INTO \`t\` VALUES ` est conservé pour réécriture à l'identique.
+- [ ] Table name, optional column list `(\`a\`, \`b\`)`.
+- [ ] `VALUES` tokenizer: state machine `Outside`, `InSingleQuote`, `Escape`, `InHex`, `InBinaryPrefix`. Separators `,` and tuples `( … )`.
+- [ ] Unescape: `\'`, `\"`, `\\`, `\n`, `\r`, `\t`, `\0`, `\Z`, `\b`, `''`.
+- [ ] Emit `RowsBegin`, then one `Row` per tuple, then `RowsEnd`.
+- [ ] The `INSERT INTO \`t\` VALUES ` prefix is kept to be rewritten identically.
 
-### 2d. Sérialiseur
-- [ ] `Raw` → écriture brute.
-- [ ] `Row` : ré-échapper les `Str` avec exactement les règles de `mysqldump` (il n'échappe que `\`, `'`, `"`, `\n`, `\r`, `\0`, `\Z`, `\t` ? → à vérifier empiriquement sur un vrai dump, c'est ce que le round-trip va révéler).
-- [ ] Reconstituer `(…),(…),…;` avec les mêmes séparateurs.
+### 2d. Serializer
+- [ ] `Raw` → raw write.
+- [ ] `Row`: re-escape `Str` values with exactly `mysqldump`'s rules (does it only escape `\`, `'`, `"`, `\n`, `\r`, `\0`, `\Z`, `\t`? → to be checked empirically on a real dump, which is what the round-trip will reveal).
+- [ ] Rebuild `(…),(…),…;` with the same separators.
 
 ### 2e. Tests
-- [ ] `tests/roundtrip.rs` : pour chaque fichier de `fixtures/dumps/`, parse → write → `assert_eq!(bytes)`. Utiliser `similar-asserts` ou afficher l'offset du premier octet différent.
-- [ ] Test unitaire par cas d'échappement (une fonction `unescape` / `escape` testées en round-trip).
-- [ ] `proptest` : générer des chaînes aléatoires, `escape(unescape(escape(s))) == escape(s)`.
-- [ ] Générer un vrai dump avec un MySQL local (Docker) contenant des valeurs tordues, l'ajouter aux fixtures. Ne fais pas confiance à mes fixtures écrites à la main : `mysqldump` a ses propres habitudes.
+- [ ] `tests/roundtrip.rs`: for each file in `fixtures/dumps/`, parse → write → `assert_eq!(bytes)`. Use `similar-asserts` or print the offset of the first differing byte.
+- [ ] One unit test per escaping case (an `unescape` / `escape` function tested in round-trip).
+- [ ] `proptest`: generate random strings, `escape(unescape(escape(s))) == escape(s)`.
+- [ ] Generate a real dump with a local MySQL (Docker) containing twisted values, add it to the fixtures. Don't trust my hand-written fixtures: `mysqldump` has its own habits.
 
-**Sortie** : T01 vert sur `01_basic.sql`, `02_parser_edge_cases.sql` et un dump réel. Mémoire < 50 Mo sur un dump de 1 Go (générer avec un script).
-
----
-
-## Étape 3 — Configuration (1 à 2 soirées)
-
-Fichier : `src/config.rs`
-
-- [ ] Structs serde : `Config { version, source, mode, defaults, tables: BTreeMap<String, BTreeMap<String, Rule>>, skip_tables, truncate_tables, review, sampling }`.
-- [ ] `Rule` désérialisée depuis soit une chaîne (`email`, `null`, `keep`, `constant("…")`), soit une map (`{ preset: date_shift, days: 365 }`). Implémenter un `Deserialize` custom ou un `enum` `#[serde(untagged)]`.
-- [ ] Validation après chargement : preset inconnu → erreur avec suggestion ("did you mean `first_name`?"), `dsn`/`password`/`key` présents → erreur, `mode: pseudonymize` sans `$SOSIE_KEY` → erreur.
-- [ ] Tests : charger chaque fixture yaml ; un yaml invalide par type d'erreur.
-
-**Sortie** : `Config::load("sosie.yaml")` sur les 5 fixtures ; erreurs lisibles.
+**Exit**: T01 green on `01_basic.sql`, `02_parser_edge_cases.sql` and a real dump. Memory < 50 MB on a 1 GB dump (generated with a script).
 
 ---
 
-## Étape 4 — Moteur de transformation et premiers presets (3 soirées)
+## Step 3 — Configuration (1 to 2 evenings)
 
-Fichiers : `src/transform.rs`, `src/presets/`
+File: `src/config.rs`
 
-### 4a. Le trait et la graine
+- [ ] Serde structs: `Config { version, source, mode, defaults, tables: BTreeMap<String, BTreeMap<String, Rule>>, skip_tables, truncate_tables, review, sampling }`.
+- [ ] `Rule` deserialized from either a string (`email`, `null`, `keep`, `constant("…")`) or a map (`{ preset: date_shift, days: 365 }`). Implement a custom `Deserialize` or a `#[serde(untagged)]` `enum`.
+- [ ] Validation after loading: unknown preset → error with a suggestion ("did you mean `first_name`?"), `dsn`/`password`/`key` present → error, `mode: pseudonymize` without `$SOSIE_KEY` → error.
+- [ ] Tests: load each yaml fixture; one invalid yaml per error type.
+
+**Exit**: `Config::load("sosie.yaml")` on the 5 fixtures; readable errors.
+
+---
+
+## Step 4 — Transformation engine and first presets (3 evenings)
+
+Files: `src/transform.rs`, `src/presets/`
+
+### 4a. The trait and the seed
 - [ ] `trait Preset { fn apply(&self, input: &Value, seed: &Seed, ctx: &ColumnCtx) -> Value; fn name(&self) -> &str; }`
-- [ ] `Seed` = 32 octets = `HMAC-SHA256(key, preset_name || 0x00 || valeur_brute)`. Fonction `seed_for(key, preset, value)`.
-- [ ] `Seed::rng() -> ChaCha8Rng` pour piocher dans des listes.
-- [ ] Clé : en mode `anonymize`, `rand::random::<[u8; 32]>()` au démarrage, jamais loggée ; en `pseudonymize`, `$SOSIE_KEY` (au moins 16 caractères).
+- [ ] `Seed` = 32 bytes = `HMAC-SHA256(key, preset_name || 0x00 || raw_value)`. Function `seed_for(key, preset, value)`.
+- [ ] `Seed::rng() -> ChaCha8Rng` to pick from lists.
+- [ ] Key: in `anonymize` mode, `rand::random::<[u8; 32]>()` at startup, never logged; in `pseudonymize`, `$SOSIE_KEY` (at least 16 characters).
 
-### 4b. Presets P0, dans cet ordre
-1. [ ] `keep`, `null`, `constant` (triviaux, valident la plomberie).
-2. [ ] `hash` (hex du seed, tronqué à `max_len`).
-3. [ ] `email` : `prenom.nom@example.org`, listes embarquées via `include_str!("data/fr_FR/first_names.txt")`.
+### 4b. P0 presets, in this order
+1. [ ] `keep`, `null`, `constant` (trivial, they validate the plumbing).
+2. [ ] `hash` (hex of the seed, truncated to `max_len`).
+3. [ ] `email`: `firstname.lastname@example.org`, lists embedded via `include_str!("data/fr_FR/first_names.txt")`.
 4. [ ] `first_name`, `last_name`, `full_name`.
-5. [ ] `phone` : détecter le format d'entrée (E.164 `+33…` vs national `06…`), produire le même format.
-6. [ ] `date_shift` : parser `YYYY-MM-DD[ HH:MM:SS]`, décaler de `±days` dérivé du seed, réémettre au même format.
-7. [ ] `iban` : garder les 2 lettres pays, générer un BBAN de la bonne longueur (table pays → longueur), calculer la clé mod 97. Test : la sortie passe une validation IBAN indépendante.
-8. [ ] `address_line`, `city`, `postcode` (avec `keep_department`).
+5. [ ] `phone`: detect the input format (E.164 `+33…` vs national `06…`), produce the same format.
+6. [ ] `date_shift`: parse `YYYY-MM-DD[ HH:MM:SS]`, shift by `±days` derived from the seed, re-emit in the same format.
+7. [ ] `iban`: keep the 2 country letters, generate a BBAN of the right length (country → length table), compute the mod 97 check digits. Test: the output passes an independent IBAN validation.
+8. [ ] `address_line`, `city`, `postcode` (with `keep_department`).
 
-Règles transverses testées pour **chaque** preset : `Null → Null`, chaîne vide → chaîne vide, troncature à `max_len` comptée dans le rapport, déterminisme (même seed → même sortie).
+Cross-cutting rules tested for **each** preset: `Null → Null`, empty string → empty string, truncation to `max_len` counted in the report, determinism (same seed → same output).
 
-### 4c. Le plan par table
-- [ ] À chaque `TableSchema` : construire `Vec<Option<Box<dyn Preset>>>` indexé par position de colonne. Gérer `RowsBegin.columns` (liste explicite) en remappant les positions.
-- [ ] Tables dans `skip_tables` : émettre le `CREATE TABLE`, avaler les `Row`.
-- [ ] Sur `Row` : pour chaque valeur avec un preset, remplacer ; sinon passer.
+### 4c. The per-table plan
+- [ ] On each `TableSchema`: build a `Vec<Option<Box<dyn Preset>>>` indexed by column position. Handle `RowsBegin.columns` (explicit list) by remapping positions.
+- [ ] Tables in `skip_tables`: emit the `CREATE TABLE`, swallow the `Row`s.
+- [ ] On `Row`: for each value with a preset, replace it; otherwise pass it through.
 
-### 4d. Le garde-fou
-- [ ] **Avant d'écrire le premier octet**, faire une première passe légère ? Non : un dump sur stdin ne se relit pas. Solution : la vérification se fait sur les `CREATE TABLE` au fur et à mesure, mais comme `mysqldump` émet le `CREATE TABLE` juste avant ses `INSERT`, on peut avoir déjà écrit d'autres tables. Donc :
-  - `check` (étape 6) est la vraie barrière, à lancer avant.
-  - `transform` en plus **refuse** dès qu'il rencontre une table avec une colonne sensible non couverte (via `scan` sur le nom), s'arrête, supprime le fichier de sortie partiel s'il l'a créé lui-même, et code retour ≠ 0.
-  - Écriture dans un fichier temporaire + `rename` atomique à la fin : jamais de sortie partielle sous le nom final.
+### 4d. The safeguard
+- [ ] **Before writing the first byte**, do a light first pass? No: a dump on stdin can't be re-read. Solution: the check happens on each `CREATE TABLE` as we go, but since `mysqldump` emits the `CREATE TABLE` right before its `INSERT`s, other tables may already have been written. So:
+  - `check` (step 6) is the real barrier, to be run beforehand.
+  - `transform` additionally **refuses** as soon as it meets a table with an uncovered sensitive column (via `scan` on the name), stops, deletes the partial output file if it created it itself, and exits with a non-zero code.
+  - Write to a temporary file + atomic `rename` at the end: never a partial output under the final name.
 
 ### 4e. Tests
-- [ ] Golden `insta` : `01_basic.sql` + `03_pseudonymize.yaml` + `SOSIE_KEY=test-…` → snapshot.
-- [ ] Assertions de T02 (script `run.sh` ou en Rust avec `assert_cmd`).
+- [ ] `insta` golden test: `01_basic.sql` + `03_pseudonymize.yaml` + `SOSIE_KEY=test-…` → snapshot.
+- [ ] T02 assertions (a `run.sh` script or in Rust with `assert_cmd`).
 
-**Sortie** : T02, T03 (partie transform), T04, T05 verts.
-
----
-
-## Étape 5 — Rapport (1 soirée)
-
-Fichier : `src/report.rs`
-
-- [ ] Compteurs : lignes lues/écrites par table, colonnes transformées/null/keep, troncatures, tables skippées, objets `Raw` notables (VIEW, TRIGGER, PROCEDURE), durée, débit, mémoire max (`/proc/self/status` sur Linux, sinon absent).
-- [ ] Affichage terminal (tableau simple) + écriture `.sosie/last-report.json`.
-- [ ] Aucune valeur de données dans le rapport, testé.
-
-**Sortie** : T02 assertion 17 verte.
+**Exit**: T02, T03 (transform part), T04, T05 green.
 
 ---
 
-## Étape 6 — `scan`, `init`, `check` (3 soirées)
+## Step 5 — Report (1 evening)
 
-Fichier : `src/scan.rs`
+File: `src/report.rs`
 
-### 6a. Détection par nom
-- [ ] Table de motifs → preset + score (voir cahier des charges §5.5). Normaliser le nom : minuscule, `camelCase` → `snake_case`.
-- [ ] Exclusions (`table_name`, `file_name`, `class_name`, `role_name`, `product.name`…) → score réduit.
+- [ ] Counters: rows read/written per table, columns transformed/null/keep, truncations, skipped tables, notable `Raw` objects (VIEW, TRIGGER, PROCEDURE), duration, throughput, peak memory (`/proc/self/status` on Linux, absent otherwise).
+- [ ] Terminal display (simple table) + writing `.sosie/last-report.json`.
+- [ ] No data value in the report, tested.
 
-### 6b. Détection par contenu
-- [ ] Sur un dump : pendant le parse, garder les 200 premières valeurs non nulles de chaque colonne texte.
-- [ ] Regex email, IBAN (+ mod 97), téléphone, IP ; ratio ≥ 0,8 → score fort.
-- [ ] Texte long contenant email/téléphone dans ≥ 5 % des valeurs → `review`.
-- [ ] Colonne JSON dont les clés matchent 6a → `review`.
+**Exit**: T02 assertion 17 green.
+
+---
+
+## Step 6 — `scan`, `init`, `check` (3 evenings)
+
+File: `src/scan.rs`
+
+### 6a. Name-based detection
+- [ ] Pattern table → preset + score (see the specification §5.5). Normalize the name: lowercase, `camelCase` → `snake_case`.
+- [ ] Exclusions (`table_name`, `file_name`, `class_name`, `role_name`, `product.name`…) → reduced score.
+
+### 6b. Content-based detection
+- [ ] On a dump: while parsing, keep the first 200 non-null values of each text column.
+- [ ] Email, IBAN (+ mod 97), phone, IP regexes; ratio ≥ 0.8 → strong score.
+- [ ] Long text containing an email/phone in ≥ 5% of values → `review`.
+- [ ] JSON column whose keys match 6a → `review`.
 
 ### 6c. `init`
-- [ ] Combiner les scores, produire le YAML avec commentaires (`# nom + contenu`) : générer le texte à la main plutôt que via serde pour garder les commentaires.
-- [ ] Test T06 : comparer sémantiquement à `01_basic.expected-init.yaml`.
+- [ ] Combine the scores, produce the YAML with comments (`# name + content`): generate the text by hand rather than via serde to keep the comments.
+- [ ] Test T06: compare semantically with `01_basic.expected-init.yaml`.
 
 ### 6d. `check`
-- [ ] Recalculer le scan, comparer à la config : colonnes ≥ 0,8 sans règle, `review` non vide, `on_unclassified: keep` sans flag → liste + code retour 1.
-- [ ] Test T03 (partie check).
+- [ ] Recompute the scan, compare with the config: columns ≥ 0.8 without a rule, non-empty `review`, `on_unclassified: keep` without a flag → list + exit code 1.
+- [ ] Test T03 (check part).
 
-**Sortie** : T03, T06 verts. `sosie presets` liste les presets avec un exemple généré.
-
----
-
-## Étape 7 — Finitions v0.1 (2 soirées)
-
-- [ ] Sortie `.sql.zst` (`zstd` crate, encoder en flux) et `.sql.gz`.
-- [ ] `--dry-run` : tout sauf l'écriture.
-- [x] Barre de progression (`indicatif`) si stdin est un fichier de taille connue.
-- [ ] Messages d'erreur : toujours `table.colonne` + numéro d'instruction, jamais de contenu.
-- [ ] README : le chrono des 10 minutes, un GIF, le tableau des presets, "ce que Sosie garantit / ne garantit pas".
-- [ ] Bench : dump synthétique 1 Go, mesurer débit et mémoire, mettre les chiffres dans le README.
-- [ ] `cargo publish --dry-run`, release GitHub avec binaires Linux/macOS (cross via `cargo-dist`).
-
-**Sortie** : un inconnu installe Sosie, suit le README et transforme un dump en 10 minutes. Demande à un collègue de le faire sans ton aide : c'est le vrai test.
+**Exit**: T03, T06 green. `sosie presets` lists the presets with a generated example.
 
 ---
 
-## Ordre de bataille résumé
+## Step 7 — v0.1 polish (2 evenings)
+
+- [ ] `.sql.zst` output (`zstd` crate, streaming encoder) and `.sql.gz`.
+- [ ] `--dry-run`: everything except writing.
+- [x] Progress bar (`indicatif`) if stdin is a file of known size.
+- [ ] Error messages: always `table.column` + statement number, never content.
+- [ ] README: the 10-minute timeline, a GIF, the presets table, "what Sosie guarantees / doesn't guarantee".
+- [ ] Bench: 1 GB synthetic dump, measure throughput and memory, put the numbers in the README.
+- [ ] `cargo publish --dry-run`, GitHub release with Linux/macOS binaries (cross via `cargo-dist`).
+
+**Exit**: a stranger installs Sosie, follows the README and transforms a dump in 10 minutes. Ask a colleague to do it without your help: that's the real test.
+
+---
+
+## Battle order, summarized
 
 ```
-0 squelette ─▶ 1 événements ─▶ 2 parseur + round-trip ─▶ 3 config
-                                                            │
-7 finitions ◀─ 6 scan/init/check ◀─ 5 rapport ◀─ 4 transform + presets
+0 skeleton ─▶ 1 events ─▶ 2 parser + round-trip ─▶ 3 config
+                                                      │
+7 polish ◀─ 6 scan/init/check ◀─ 5 report ◀─ 4 transform + presets
 ```
 
-Étapes 2 et 4 représentent 70 % du travail et 100 % de la valeur. Si tu bloques, c'est là, et c'est là qu'on regarde ensemble.
+Steps 2 and 4 represent 70% of the work and 100% of the value. If you get stuck, it's there, and that's where we look together.
 
 ---
 
-## Ce qu'on ne fait PAS en v0.1 (pour résister à la tentation)
+## What we DON'T do in v0.1 (to resist temptation)
 
-Postgres, connexion directe, sampling, `pull` via SSH, Doctrine, chiffrement, preset `json`, parallélisme, bundle Symfony, site web. Chacun est noté dans le cahier des charges avec sa priorité ; aucun ne rend la v0.1 plus utile.
+Postgres, direct connection, sampling, `pull` over SSH, Doctrine, encryption, `json` preset, parallelism, Symfony bundle, website. Each one is listed in the specification with its priority; none of them makes v0.1 more useful.

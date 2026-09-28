@@ -2,7 +2,7 @@
 name = "sosie"
 version = "0.1.0"
 edition = "2024"
-description = "Anonymise ou pseudonymise un dump mysqldump en streaming, à partir d'une config YAML"
+description = "Anonymize or pseudonymize a mysqldump dump in streaming, driven by a YAML config"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mlejeunedev/sosie/"
 readme = "README.md"

@@ -20,7 +20,7 @@ use progress::Progress;
 #[command(
     name = "sosie",
     version,
-    about = "Anonymise ou pseudonymise un dump mysqldump, en streaming."
+    about = "Anonymize or pseudonymize a mysqldump dump, in streaming."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
-            eprintln!("erreur : {e:#}");
+            eprintln!("error: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -116,9 +116,16 @@ fn cmd_transform(args: TransformArgs) -> Result<bool> {
     } else {
         match &args.out {
             Some(path) => {
-                let tmp_path = tmp_path_for(path);
+                // Write through a temp file + rename only for regular files:
+                // devices and pipes (`/dev/null`, FIFOs) can't be replaced.
+                let atomic = std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(true);
+                let tmp_path = if atomic {
+                    tmp_path_for(path)
+                } else {
+                    path.clone()
+                };
                 let file = File::create(&tmp_path)
-                    .with_context(|| format!("création de {}", tmp_path.display()))?;
+                    .with_context(|| format!("creating {}", tmp_path.display()))?;
                 let result = transform::run_with_progress(
                     &config,
                     reader,
@@ -127,17 +134,16 @@ fn cmd_transform(args: TransformArgs) -> Result<bool> {
                     on_progress,
                 );
                 match result {
+                    Ok(()) if !atomic => {}
                     Ok(()) => {
                         std::fs::rename(&tmp_path, path).with_context(|| {
-                            format!(
-                                "renommage de {} vers {}",
-                                tmp_path.display(),
-                                path.display()
-                            )
+                            format!("renaming {} to {}", tmp_path.display(), path.display())
                         })?;
                     }
                     Err(e) => {
-                        let _ = std::fs::remove_file(&tmp_path);
+                        if atomic {
+                            let _ = std::fs::remove_file(&tmp_path);
+                        }
                         return Err(e);
                     }
                 }
@@ -182,8 +188,7 @@ fn cmd_transform(args: TransformArgs) -> Result<bool> {
 fn open_input(path: Option<&std::path::Path>) -> Result<(Box<dyn Read>, Option<u64>)> {
     match path {
         Some(path) => {
-            let file =
-                File::open(path).with_context(|| format!("ouverture de {}", path.display()))?;
+            let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
             let len = file.metadata().ok().map(|m| m.len()).filter(|&l| l > 0);
             Ok((Box::new(file), len))
         }
@@ -191,10 +196,10 @@ fn open_input(path: Option<&std::path::Path>) -> Result<(Box<dyn Read>, Option<u
     }
 }
 
-/// Analyzes a dump with an `analyse` spinner on stderr.
+/// Analyzes a dump with a `scan` spinner on stderr.
 fn scan_with_progress(path: &std::path::Path) -> Result<Vec<scan::ScannedTable>> {
     let (reader, total_bytes) = open_input(Some(path))?;
-    let progress = Progress::new(total_bytes, "analyse");
+    let progress = Progress::new(total_bytes, "scan");
     let tables = scan::scan_dump(progress.wrap_read(reader))?;
     progress.finish(&format!("{} tables", tables.len()));
     Ok(tables)
@@ -209,14 +214,13 @@ fn tmp_path_for(path: &std::path::Path) -> PathBuf {
 fn cmd_init(args: InitArgs) -> Result<bool> {
     let tables = scan_with_progress(&args.from)?;
     let yaml = scan::render_init_yaml(&tables);
-    std::fs::write(&args.out, yaml)
-        .with_context(|| format!("écriture de {}", args.out.display()))?;
+    std::fs::write(&args.out, yaml).with_context(|| format!("writing {}", args.out.display()))?;
     println!(
-        "{} généré à partir de {}",
+        "{} generated from {}",
         args.out.display(),
         args.from.display()
     );
-    println!("Relis-le et ajuste les presets avant de lancer `sosie check`.");
+    println!("Review it and adjust the presets before running `sosie check`.");
     Ok(true)
 }
 
@@ -241,32 +245,30 @@ fn cmd_check(args: CheckArgs) -> Result<bool> {
 
     if missing.is_empty() && review.is_empty() {
         println!(
-            "check OK : {} tables, aucune colonne sensible sans règle.",
+            "check OK: {} tables, no sensitive column without a rule.",
             tables.len()
         );
         return Ok(true);
     }
 
     if !missing.is_empty() {
-        println!("Colonnes sensibles sans règle (score >= 0.8) :");
+        println!("Sensitive columns without a rule (score >= 0.8):");
         for (table, column, c) in &missing {
             println!("  {table}.{column}  — {}", c.reason);
         }
     }
     if !review.is_empty() {
-        println!("Colonnes à trancher manuellement (score 0.4-0.8) :");
+        println!("Columns to decide manually (score 0.4-0.8):");
         for (table, column, c) in &review {
             println!("  {table}.{column}  — {}", c.reason);
         }
     }
-    println!(
-        "\ncheck ÉCHOUÉ. Ajoute une règle explicite (ou `keep`) pour chaque colonne ci-dessus."
-    );
+    println!("\ncheck FAILED. Add an explicit rule (or `keep`) for each column above.");
     Ok(false)
 }
 
 fn cmd_presets() -> Result<bool> {
-    println!("{:<14} exemple", "preset");
+    println!("{:<14} example", "preset");
     for name in presets::KNOWN_PRESETS {
         let sample = sample_value_for(name);
         let preset = presets::build(name, &Default::default())?;
@@ -294,6 +296,6 @@ fn sample_value_for(preset: &str) -> String {
         "bic" => "AGRIFRPPXXX".to_string(),
         "ip" => "192.168.1.1".to_string(),
         "postcode" => "75001".to_string(),
-        _ => "exemple".to_string(),
+        _ => "example".to_string(),
     }
 }

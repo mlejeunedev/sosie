@@ -1,109 +1,125 @@
 # Sosie
 
-**Copie une base MySQL de production sur un poste de développeur, sans qu'une seule donnée personnelle réelle ne s'y retrouve.**
+[![crates.io](https://img.shields.io/crates/v/sosie.svg)](https://crates.io/crates/sosie)
+[![pipeline](https://gitlab.com/mlejeune/sosie/badges/main/pipeline.svg)](https://gitlab.com/mlejeune/sosie/-/pipelines)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE.md)
 
-Sosie lit un dump `mysqldump`, remplace les colonnes sensibles (email, nom, téléphone, IBAN, adresse...) par des valeurs fictives mais plausibles, et réécrit un dump SQL valide — en streaming, sans jamais charger le fichier entier en mémoire.
+**Copy a production MySQL database to a developer laptop without a single real piece of personal data ending up there.**
+
+Sosie reads a `mysqldump` dump, replaces sensitive columns (email, name, phone, IBAN, address...) with fake but plausible values, and writes back a valid SQL dump — streaming, without ever loading the whole file into memory.
+
+```bash
+mysqldump my_db | sosie transform --config sosie.yaml > dump_clean.sql
+mysql my_db_dev < dump_clean.sql
+```
 
 ```
-mysqldump ma_base | sosie transform --config sosie.yaml > dump_clean.sql
-mysql ma_base_dev < dump_clean.sql
+-- before
+(1,'jean.dupont@gmail.com','Jean','Dupont','0612345678','1985-03-14','$2y$13$abcd…','tok_a1b2c3d4e5f6','jeanjean',…)
+-- after
+(1,'claire.andre.504a71@example.org','Theo','Lefebvre','0795958940','1985-08-26','$2y$13$DEVONLY…',NULL,NULL,…)
 ```
 
-## Pourquoi
+## Why
 
-Un dump brut de prod sur un laptop de développeur, c'est une fuite de données personnelles qui s'ignore. Les alternatives habituelles sont mauvaises : des fixtures ne ressemblent jamais à la vraie prod, un script SQL maison est lent et vite obsolète, et refaire les mêmes requêtes anonymisées à la main à chaque fois n'est pas tenable. Sosie automatise ça avec un principe simple : **par défaut, l'outil refuse de tourner si une colonne qui ressemble à une donnée personnelle n'a pas de règle explicite.**
+A raw production dump on a developer laptop is a personal data leak waiting to happen. The usual alternatives are poor: fixtures never look like real production, a homemade SQL script is slow and quickly goes stale, and re-running the same anonymizing queries by hand every time doesn't scale.
 
-## État actuel
+Sosie automates this with one simple rule: **by default, it refuses to run if a column that looks like personal data has no explicit rule.**
 
-Le cœur du projet est implémenté et testé :
+## Features
 
-- parseur/writer `mysqldump` en streaming, round-trip byte-à-byte vérifié ;
-- 13 presets de transformation déterministes (email, noms, téléphone, IBAN, BIC, adresse, date, IP, hash...) ;
-- moteur de transformation piloté par une config YAML, avec garde-fou de sécurité ;
-- détection automatique des colonnes sensibles par nom et par contenu, pour générer et vérifier la config (`init` / `check`) ;
-- rapport de fin d'exécution (compteurs uniquement, jamais une valeur de donnée) ;
-- barre de progression sur stderr (pourcentage, débit, ETA, table courante), masquée hors terminal.
-
-Pas encore fait (finitions, non bloquantes) : sortie compressée, benchmark à grande échelle, première publication sur crates.io et première Release GitHub (le workflow de build des binaires existe, il ne s'est juste pas encore déclenché sur un tag). Détails, limitations précises et référence complète : **[`docs/USAGE.md`](docs/USAGE.md)**.
+- **Streaming** — the dump is processed one statement at a time: 1 GB and 17 million rows in ~30 s, under 100 MB of RAM (Apple M1 Pro). Only the deduplication state of `UNIQUE` columns grows with the data.
+- **Guided setup** — `sosie init` scans the schema *and the content* of your dump and generates a ready-to-review config. You only decide the ambiguous cases.
+- **Safe by default** — `check` fails in CI if a sensitive column has no rule; `transform` refuses to start as a last resort.
+- **Fakes that look real** — IBANs with a valid checksum, well-formed phone numbers, plausible addresses and dates. `UNIQUE` / `PRIMARY KEY` values stay unique, `NOT NULL` columns never get a `NULL`.
+- **Anonymize or pseudonymize** — a random key per run (irreversible), or a stable key from `SOSIE_KEY` for reproducible output across exports.
+- **Byte-exact passthrough** — everything that isn't transformed is written back unchanged.
+- **Data-free reports** — the end-of-run summary only contains counters, never a data value.
 
 ## Installation
 
-**Avec Rust installé** — compile et installe le binaire dans `~/.cargo/bin/` :
+**With Rust installed:**
 
 ```bash
 cargo install sosie
-sosie --help
 ```
 
-**Sans Rust** — télécharge le binaire précompilé pour ta plateforme depuis la [page des Releases GitHub](https://github.com/mlejeunedev/sosie/releases), décompresse l'archive et lance `./sosie --help`.
+**Without Rust:** download the prebuilt binary for your platform (Linux, macOS Intel / Apple Silicon, Windows) from the [GitHub Releases page](https://github.com/mlejeunedev/sosie/releases), extract it and run `./sosie --help`.
 
-**Depuis les sources** — pour contribuer ou suivre la branche de développement :
+**From source:**
 
 ```bash
-git clone <ce dépôt>
+git clone https://github.com/mlejeunedev/sosie.git
 cd sosie
 cargo build --release
 ./target/release/sosie --help
 ```
 
-## Démarrage rapide
+## Quick start
 
-**1. Dumper la base à anonymiser**
+**1. Dump the database to anonymize**
 
 ```bash
-mysqldump --single-transaction ma_base > dump.sql
+mysqldump --single-transaction my_db > dump.sql
 ```
 
-**2. Générer une config de départ** — Sosie analyse le schéma et un échantillon des données, et propose un `sosie.yaml` :
+**2. Generate a starter config** — Sosie analyzes the schema and a sample of the data, and proposes a `sosie.yaml`:
 
 ```bash
 sosie init --from dump.sql --out sosie.yaml
 ```
 
-**3. Relire et compléter la config.** `init` couvre automatiquement ce qu'il reconnaît avec confiance (email, téléphone, IBAN...), mais laisse une section `review:` pour les cas ambigus (`notes`, `nickname`, un champ JSON contenant une clé sensible...) — c'est le seul moment où un humain doit trancher :
+**3. Review and complete the config.** `init` automatically covers what it recognizes with confidence (email, phone, IBAN...), and leaves a `review:` section for ambiguous cases (`notes`, `nickname`, a JSON column containing a sensitive key...) — the only moment a human has to decide:
 
 ```yaml
 tables:
   order:
-    notes: null       # texte libre qui contenait parfois un téléphone -> on vide
+    notes: null       # free text that sometimes contained a phone number -> empty it
   product:
-    name: keep          # nom de produit, pas une personne -> faux positif, on garde
+    name: keep        # product name, not a person -> false positive, keep it
 ```
 
-**4. Vérifier que tout est couvert**
+**4. Check that everything is covered**
 
 ```bash
 sosie check --from dump.sql --config sosie.yaml
-# check OK : 6 tables, aucune colonne sensible sans règle.
 ```
 
-**5. Transformer**
+**5. Transform**
 
 ```bash
 sosie transform --from dump.sql --config sosie.yaml --out dump_clean.sql
 ```
 
-`dump_clean.sql` est un dump SQL valide, importable tel quel, où les données personnelles ont été remplacées par des valeurs fictives cohérentes (même structure, même format, contraintes `NOT NULL` respectées).
+`dump_clean.sql` is a valid SQL dump, importable as is, where personal data has been replaced by consistent fake values (same structure, same format, `NOT NULL` constraints respected).
 
-**6. Importer en local**
+**6. Import locally**
 
 ```bash
-mysql ma_base_dev < dump_clean.sql
+mysql my_db_dev < dump_clean.sql
 ```
 
-Le détail de chaque commande, le cas d'usage complet et la liste des presets sont dans `docs/USAGE.md`. Les valeurs de règle possibles (`keep`/`null`/`constant`/preset) et le choix entre `anonymize` et `pseudonymize` sont dans `docs/CONFIGURATION.md`.
+## Documentation
 
-## Développement
+- [`docs/USAGE.md`](docs/USAGE.md) — full reference: commands, a complete walkthrough, presets, limitations.
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — `sosie.yaml` in detail: possible rule values, `anonymize` vs `pseudonymize`.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history.
+
+## Current limitations
+
+- MySQL / MariaDB only, `fr_FR` locale only for generated values.
+- No compressed output: pipe it yourself (`sosie transform … | zstd -o out.sql.zst`).
+
+## Development
 
 ```bash
-cargo test           # suite de tests
-cargo fmt --check    # formatage
+cargo test
+cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-Ces trois commandes sont celles de la CI (`.gitlab-ci.yml`).
+These three commands are the ones run by CI (`.gitlab-ci.yml`).
 
-- [`docs/USAGE.md`](docs/USAGE.md) — référence d'utilisation complète (commandes, cas d'usage, presets, limitations).
-- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — détail technique de `sosie.yaml` : valeurs de règle possibles, `anonymize` vs `pseudonymize`.
-- [`docs/PLAN.md`](docs/PLAN.md) — plan de construction, étape par étape.
-- [`docs/CAHIER_DES_CHARGES.md`](docs/CAHIER_DES_CHARGES.md) — vision cible et fonctionnalités futures.
+## License
+
+Licensed under either of MIT or Apache-2.0, at your option. See [`LICENSE.md`](LICENSE.md).

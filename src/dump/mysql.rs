@@ -192,7 +192,7 @@ fn expect_keyword(buf: &[u8], i: usize, word: &[u8]) -> Result<usize> {
         Ok(i + word.len())
     } else {
         bail!(
-            "attendu {:?} à la position {i}, trouvé {:?}",
+            "expected {:?} at position {i}, found {:?}",
             String::from_utf8_lossy(word),
             String::from_utf8_lossy(&buf[i..buf.len().min(i + 20)])
         )
@@ -204,7 +204,7 @@ fn expect_keyword(buf: &[u8], i: usize, word: &[u8]) -> Result<usize> {
 /// Returns the unescaped name and the position just after the closing backtick.
 fn parse_backtick_ident(buf: &[u8], i: usize) -> Result<(String, usize)> {
     if buf.get(i) != Some(&b'`') {
-        bail!("identifiant entre backticks attendu à la position {i}");
+        bail!("backtick-quoted identifier expected at position {i}");
     }
     let mut name = Vec::new();
     let mut j = i + 1;
@@ -219,7 +219,7 @@ fn parse_backtick_ident(buf: &[u8], i: usize) -> Result<(String, usize)> {
                 name.push(b);
                 j += 1;
             }
-            None => bail!("backtick fermant manquant"),
+            None => bail!("missing closing backtick"),
         }
     }
 }
@@ -242,7 +242,7 @@ fn parse_qualified_ident(buf: &[u8], i: usize) -> Result<(String, usize)> {
 /// parentheses and commas inside `'…'` / `"…"` strings.
 fn find_matching_paren(buf: &[u8], open: usize) -> Result<usize> {
     if buf.get(open) != Some(&b'(') {
-        bail!("'(' attendu à la position {open}");
+        bail!("'(' expected at position {open}");
     }
     let mut depth = 1i32;
     let mut i = open + 1;
@@ -293,7 +293,7 @@ fn find_matching_paren(buf: &[u8], open: usize) -> Result<usize> {
         }
         i += 1;
     }
-    bail!("parenthèse fermante manquante")
+    bail!("missing closing parenthesis")
 }
 
 /// Splits `buf` on top-level commas (outside strings and nested
@@ -477,7 +477,7 @@ fn parse_create_table(stmt: &[u8]) -> Result<Table> {
     let (name, mut i2) = parse_qualified_ident(stmt, i)?;
     i2 = skip_ws(stmt, i2);
     if stmt.get(i2) != Some(&b'(') {
-        bail!("'(' attendu après le nom de table dans CREATE TABLE {name}");
+        bail!("'(' expected after the table name in CREATE TABLE {name}");
     }
     let close = find_matching_paren(stmt, i2)?;
     let body = &stmt[i2 + 1..close];
@@ -561,7 +561,7 @@ fn find_value_tuples(stmt: &[u8], mut i: usize) -> Result<Vec<(usize, usize)>> {
     let mut tuples = Vec::new();
     loop {
         if stmt.get(i) != Some(&b'(') {
-            bail!("'(' attendu pour un tuple VALUES à la position {i}");
+            bail!("'(' expected for a VALUES tuple at position {i}");
         }
         let close = find_matching_paren(stmt, i)?;
         tuples.push((i + 1, close));
@@ -590,7 +590,7 @@ fn parse_value(token: &[u8]) -> Result<Value<'_>> {
     }
     if token.first() == Some(&b'\'') {
         if token.len() < 2 || token.last() != Some(&b'\'') {
-            bail!("chaîne mal terminée : {:?}", String::from_utf8_lossy(token));
+            bail!("unterminated string: {:?}", String::from_utf8_lossy(token));
         }
         return Ok(Value::Str(unescape_sql_string(&token[1..token.len() - 1])));
     }
@@ -934,12 +934,12 @@ mod tests {
                 assert_eq!(
                     roundtrip_dribble(fixture, n),
                     reference,
-                    "lecture par {n} octets"
+                    "reading {n} bytes at a time"
                 );
                 assert_eq!(
                     collect_events_from(Dribble { data: fixture, n }),
                     collect_events(fixture),
-                    "événements, lecture par {n} octets"
+                    "events, reading {n} bytes at a time"
                 );
             }
         }
@@ -956,8 +956,8 @@ mod tests {
                     seen.push(format!("begin {table}"));
                     parser.skip_rows();
                 }
-                Event::Row(_) => panic!("aucune Row ne doit être émise après skip_rows"),
-                Event::RowsEnd => panic!("aucun RowsEnd ne doit être émis après skip_rows"),
+                Event::Row(_) => panic!("no Row must be emitted after skip_rows"),
+                Event::RowsEnd => panic!("no RowsEnd must be emitted after skip_rows"),
                 Event::TableSchema(t) => seen.push(format!("schema {}", t.name)),
                 Event::Raw(_) => {}
             }
@@ -1080,7 +1080,7 @@ mod tests {
             let diff_at = (0..n).find(|&i| output[i] != expected[i]).unwrap_or(n);
             let start = diff_at.saturating_sub(40);
             panic!(
-                "diverge à l'octet {diff_at} (expected.len()={}, output.len()={})\nexpected: {:?}\noutput  : {:?}",
+                "diverges at byte {diff_at} (expected.len()={}, output.len()={})\nexpected: {:?}\noutput  : {:?}",
                 expected.len(),
                 output.len(),
                 String::from_utf8_lossy(&expected[start..(diff_at + 40).min(expected.len())]),

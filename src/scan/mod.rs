@@ -62,14 +62,14 @@ pub fn classify_by_name(column: &str) -> Classification {
         return Classification {
             score: 0.9,
             preset: Some("email"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["first_name", "firstname", "prenom", "given_name"]) {
         return Classification {
             score: 0.9,
             preset: Some("first_name"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["last_name", "lastname", "surname", "family_name"])
@@ -78,70 +78,70 @@ pub fn classify_by_name(column: &str) -> Classification {
         return Classification {
             score: 0.9,
             preset: Some("last_name"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["phone", "tel", "mobile", "telephone"]) {
         return Classification {
             score: 0.9,
             preset: Some("phone"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["iban", "bban", "account_number"]) {
         return Classification {
             score: 0.9,
             preset: Some("iban"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["bic", "swift"]) {
         return Classification {
             score: 0.9,
             preset: Some("bic"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["ip_address", "remote_addr"]) || n == "ip" || n.ends_with("_ip") {
         return Classification {
             score: 0.9,
             preset: Some("ip"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["address", "adresse", "street", "rue", "line1", "line2"]) {
         return Classification {
             score: 0.9,
             preset: Some("address_line"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["city", "ville", "town"]) {
         return Classification {
             score: 0.9,
             preset: Some("city"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["zip", "postcode", "postal_code", "code_postal"]) {
         return Classification {
             score: 0.9,
             preset: Some("postcode"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&["birth", "dob", "naissance"]) {
         return Classification {
             score: 0.9,
             preset: Some("date_shift"),
-            reason: "nom (birth)".into(),
+            reason: "name (birth)".into(),
         };
     }
     if hit(&["ssn", "nir", "secu", "social_security"]) {
         return Classification {
             score: 0.9,
             preset: Some("null"),
-            reason: "nom".into(),
+            reason: "name".into(),
         };
     }
     if hit(&[
@@ -150,14 +150,14 @@ pub fn classify_by_name(column: &str) -> Classification {
         return Classification {
             score: 0.9,
             preset: Some("null"),
-            reason: "nom (token)".into(),
+            reason: "name (token)".into(),
         };
     }
     if hit(&["siret", "siren", "vat", "tva"]) {
         return Classification {
             score: 0.5,
             preset: None,
-            reason: "nom (identifiant d'entreprise, pas de preset v0.1)".into(),
+            reason: "name (company identifier, no preset in v0.1)".into(),
         };
     }
     if hit(&[
@@ -171,7 +171,7 @@ pub fn classify_by_name(column: &str) -> Classification {
         return Classification {
             score: 0.5,
             preset: None,
-            reason: "texte libre".into(),
+            reason: "free text".into(),
         };
     }
 
@@ -191,7 +191,7 @@ pub fn classify_by_name(column: &str) -> Classification {
             return Classification {
                 score: score.min(0.9),
                 preset: Some("full_name"),
-                reason: format!("nom ({})", hits.join(" + ")),
+                reason: format!("name ({})", hits.join(" + ")),
             };
         }
     }
@@ -217,7 +217,7 @@ fn classify_by_content(sql_type: &SqlType, samples: &[Vec<u8>]) -> Classificatio
             return Classification {
                 score: 0.5,
                 preset: None,
-                reason: "JSON contenant une clé sensible".into(),
+                reason: "JSON containing a sensitive key".into(),
             };
         }
     }
@@ -235,7 +235,7 @@ fn classify_by_content(sql_type: &SqlType, samples: &[Vec<u8>]) -> Classificatio
         return Classification {
             score: 0.9,
             preset: Some("email"),
-            reason: "contenu (email)".into(),
+            reason: "content (email)".into(),
         };
     }
     let iban_ratio = ratio(&|t: &str| is_iban(t));
@@ -243,7 +243,7 @@ fn classify_by_content(sql_type: &SqlType, samples: &[Vec<u8>]) -> Classificatio
         return Classification {
             score: 0.9,
             preset: Some("iban"),
-            reason: "contenu (IBAN)".into(),
+            reason: "content (IBAN)".into(),
         };
     }
     let phone_ratio = ratio(&|t: &str| is_phone(t));
@@ -251,7 +251,7 @@ fn classify_by_content(sql_type: &SqlType, samples: &[Vec<u8>]) -> Classificatio
         return Classification {
             score: 0.9,
             preset: Some("phone"),
-            reason: "contenu (téléphone)".into(),
+            reason: "content (phone)".into(),
         };
     }
     let ip_ratio = ratio(&|t: &str| is_ip(t));
@@ -259,7 +259,7 @@ fn classify_by_content(sql_type: &SqlType, samples: &[Vec<u8>]) -> Classificatio
         return Classification {
             score: 0.9,
             preset: Some("ip"),
-            reason: "contenu (IP)".into(),
+            reason: "content (IP)".into(),
         };
     }
 
@@ -271,7 +271,7 @@ fn classify_by_content(sql_type: &SqlType, samples: &[Vec<u8>]) -> Classificatio
             return Classification {
                 score: 0.5,
                 preset: None,
-                reason: "texte libre contenant occasionnellement des PII".into(),
+                reason: "free text occasionally containing PII".into(),
             };
         }
     }

@@ -1,6 +1,6 @@
-# Identique à 01_basic.yaml mais en mode pseudonymize.
-# Lancer avec : DBCLONE_KEY=test-key-do-not-use-in-prod
-# Deux exécutions successives doivent produire une sortie byte-à-byte identique.
+# Same as 01_basic.yaml but in pseudonymize mode.
+# Run with: SOSIE_KEY=test-key-do-not-use-in-prod
+# Two successive runs must produce byte-for-byte identical output.
 
 version: 1
 

@@ -21,7 +21,7 @@ use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 #[derive(Parser, Debug)]
-#[command(about = "Génère un gros dump mysqldump synthétique pour tester sosie.")]
+#[command(about = "Generate a large synthetic mysqldump dump to test sosie.")]
 struct Args {
     /// Target file size: `500M`, `1G`, `2G`… (approximate, ±2%).
     #[arg(long, default_value = "1G")]
@@ -41,11 +41,9 @@ fn parse_size(s: &str) -> Result<u64> {
         Some('M') => (&s[..s.len() - 1], 1u64 << 20),
         Some('G') => (&s[..s.len() - 1], 1u64 << 30),
         Some(c) if c.is_ascii_digit() => (s.as_str(), 1),
-        _ => bail!("taille invalide : {s} (attendu ex. 500M, 1G)"),
+        _ => bail!("invalid size: {s} (expected e.g. 500M, 1G)"),
     };
-    let n: f64 = num
-        .parse()
-        .with_context(|| format!("taille invalide : {s}"))?;
+    let n: f64 = num.parse().with_context(|| format!("invalid size: {s}"))?;
     Ok((n * mult as f64) as u64)
 }
 
@@ -349,7 +347,7 @@ const NICKNAMES: &[&str] = &[
 type Rng = ChaCha8Rng;
 
 fn pick<T: Copy>(rng: &mut Rng, items: &[T]) -> T {
-    *items.choose(rng).expect("liste non vide")
+    *items.choose(rng).expect("non-empty list")
 }
 
 /// Appends an SQL string `'…'`, escaped the way mysqldump does.
@@ -376,7 +374,7 @@ fn push_opt_str(buf: &mut Vec<u8>, s: Option<&str>) {
 }
 
 fn push_num(buf: &mut Vec<u8>, n: impl std::fmt::Display) {
-    write!(buf, "{n}").expect("Vec<u8> ne peut pas échouer");
+    write!(buf, "{n}").expect("writing to Vec<u8> cannot fail");
 }
 
 fn push_decimal(buf: &mut Vec<u8>, cents: u64) {
@@ -1032,12 +1030,12 @@ fn main() -> Result<()> {
     let counts = Counts::for_scale(scale);
 
     if let Some(dir) = args.out.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let file =
-        File::create(&args.out).with_context(|| format!("création de {}", args.out.display()))?;
+        File::create(&args.out).with_context(|| format!("creating {}", args.out.display()))?;
     eprintln!(
-        "génération de {} (~{} Mio, seed {}) : {} customers, {} employees, {} products, \
+        "generating {} (~{} MiB, seed {}): {} customers, {} employees, {} products, \
          {} orders, {} orderdetails, {} payments, {} users…",
         args.out.display(),
         target >> 20,
@@ -1054,7 +1052,7 @@ fn main() -> Result<()> {
     generate(BufWriter::with_capacity(4 << 20, file), args.seed, scale)?;
     let len = std::fs::metadata(&args.out)?.len();
     eprintln!(
-        "✔ {} écrit : {:.1} Mio en {:.1}s",
+        "✔ {} written: {:.1} MiB in {:.1}s",
         args.out.display(),
         len as f64 / (1u64 << 20) as f64,
         started.elapsed().as_secs_f64()
