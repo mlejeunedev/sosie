@@ -213,14 +213,24 @@ fn tmp_path_for(path: &std::path::Path) -> PathBuf {
 
 fn cmd_init(args: InitArgs) -> Result<bool> {
     let tables = scan_with_progress(&args.from)?;
-    let yaml = scan::render_init_yaml(&tables);
-    std::fs::write(&args.out, yaml).with_context(|| format!("writing {}", args.out.display()))?;
+    let init = scan::render_init_yaml(&tables);
+    std::fs::write(&args.out, &init.yaml)
+        .with_context(|| format!("writing {}", args.out.display()))?;
     println!(
-        "{} generated from {}",
+        "{} generated from {}: {} column rule(s), {} pattern(s), {} decision(s) to confirm.",
         args.out.display(),
-        args.from.display()
+        args.from.display(),
+        init.rules,
+        init.patterns,
+        init.to_review
     );
-    println!("Review it and adjust the presets before running `sosie check`.");
+    if init.to_review > 0 {
+        println!(
+            "Review the `# REVIEW` lines (switch harmless ones to `keep`), empty `review:`, then run `sosie check`."
+        );
+    } else {
+        println!("Review it and adjust the presets before running `sosie check`.");
+    }
     Ok(true)
 }
 
@@ -233,17 +243,23 @@ fn cmd_check(args: CheckArgs) -> Result<bool> {
         config.skip_tables.iter().any(|t| t == table)
             || config.truncate_tables.iter().any(|t| t == table)
     };
-    let has_rule = |table: &str, column: &str| {
-        config
-            .tables
-            .get(table)
-            .map(|cols| cols.contains_key(column))
-            .unwrap_or(false)
-    };
+    let has_rule = |table: &str, column: &str| config.rule_for(table, column).is_some();
     let missing = scan::missing_mandatory(&classifications, has_rule, exempt);
     let review = scan::needs_review(&classifications, has_rule, exempt);
 
-    if missing.is_empty() && review.is_empty() {
+    // A pattern covering nothing is most likely a typo: warn, don't fail.
+    for (pattern, _) in &config.columns {
+        let used = tables.iter().any(|t| {
+            t.columns
+                .iter()
+                .any(|c| sosie::config::pattern_matches(pattern, &t.name, &c.name))
+        });
+        if !used {
+            println!("warning: columns pattern `{pattern}` matches no column of the dump");
+        }
+    }
+
+    if missing.is_empty() && review.is_empty() && config.review.is_empty() {
         println!(
             "check OK: {} tables, no sensitive column without a rule.",
             tables.len()
@@ -263,7 +279,24 @@ fn cmd_check(args: CheckArgs) -> Result<bool> {
             println!("  {table}.{column}  — {}", c.reason);
         }
     }
-    println!("\ncheck FAILED. Add an explicit rule (or `keep`) for each column above.");
+    if !config.review.is_empty() {
+        println!(
+            "{} pre-filled decision(s) to confirm (lines marked `# REVIEW` in the config):",
+            config.review.len()
+        );
+        for entry in &config.review {
+            println!("  {entry}");
+        }
+    }
+    println!("\ncheck FAILED.");
+    if !missing.is_empty() || !review.is_empty() {
+        println!("Add an explicit rule (or `keep`) for each uncovered column above.");
+    }
+    if !config.review.is_empty() {
+        println!(
+            "Check each `# REVIEW` rule (switch it to `keep` if the data is harmless), then empty the `review:` list."
+        );
+    }
     Ok(false)
 }
 
@@ -272,11 +305,12 @@ fn cmd_presets() -> Result<bool> {
     for name in presets::KNOWN_PRESETS {
         let sample = sample_value_for(name);
         let preset = presets::build(name, &Default::default())?;
-        let seed = presets::seed_for(b"sosie-presets-demo", name, sample.as_bytes());
+        let key = b"sosie-presets-demo";
+        let seed = presets::seed_for(key, name, sample.as_bytes());
         let out = preset.apply(
             &Value::Str(std::borrow::Cow::Borrowed(sample.as_bytes())),
             &seed,
-            &ColumnCtx { max_len: None },
+            &ColumnCtx { max_len: None, key },
         );
         let rendered = match out {
             Value::Str(s) => String::from_utf8_lossy(&s).into_owned(),
@@ -296,6 +330,9 @@ fn sample_value_for(preset: &str) -> String {
         "bic" => "AGRIFRPPXXX".to_string(),
         "ip" => "192.168.1.1".to_string(),
         "postcode" => "75001".to_string(),
+        "siren" => "732829320".to_string(),
+        "siret" => "73282932000074".to_string(),
+        "vat" => "FR44732829320".to_string(),
         _ => "example".to_string(),
     }
 }

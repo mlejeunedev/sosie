@@ -80,7 +80,6 @@ pub fn resolve_key(config: &Config) -> Result<Vec<u8>> {
 fn build_table_plan(config: &Config, table: &DumpTable) -> Result<TablePlan> {
     let skip = config.skip_tables.iter().any(|t| t == &table.name)
         || config.truncate_tables.iter().any(|t| t == &table.name);
-    let rules = config.tables.get(&table.name);
 
     let mut column_action = HashMap::new();
     let mut max_len = HashMap::new();
@@ -91,7 +90,7 @@ fn build_table_plan(config: &Config, table: &DumpTable) -> Result<TablePlan> {
         if col.unique {
             unique_columns.insert(col.name.clone());
         }
-        let rule = rules.and_then(|m| m.get(&col.name));
+        let rule = config.rule_for(&table.name, &col.name);
         let action = match rule {
             Some(Rule::Keep) => Action::Keep,
             // "Set NULL (or empty string if NOT NULL, detected from the schema)": a
@@ -196,7 +195,7 @@ fn resolve_unique_preset_value(
         let out = preset.apply(
             &Value::Str(Cow::Borrowed(raw)),
             &seed,
-            &ColumnCtx { max_len },
+            &ColumnCtx { max_len, key },
         );
         match out {
             Value::Str(s) => {
@@ -303,7 +302,7 @@ fn apply_action<'a>(
                     Value::Str(Cow::Owned(bytes))
                 } else {
                     let seed = presets::seed_for(key, name, s);
-                    let ctx = ColumnCtx { max_len };
+                    let ctx = ColumnCtx { max_len, key };
                     let out = preset.apply(&value, &seed, &ctx);
                     match (max_len, out) {
                         (Some(max), Value::Str(cow)) => {

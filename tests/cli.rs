@@ -103,11 +103,136 @@ fn init_generates_config_for_sensitive_columns() {
         "first_name: first_name",
         "iban: iban",
         "ip_address: ip",
+        "notes: null  # REVIEW",
+        "payload: null  # REVIEW",
         "- order.notes",
         "- audit_log.payload",
     ] {
         assert!(yaml.contains(expected), "missing `{expected}` in:\n{yaml}");
     }
+}
+
+#[test]
+fn check_requires_the_review_list_to_be_emptied() {
+    let dir = scratch("init-review");
+    let generated = dir.join("sosie.yaml");
+    let dump = fixture(BASIC_DUMP);
+    let out = sosie(
+        &dir,
+        &[
+            "init",
+            "--from",
+            path_str(&dump),
+            "--out",
+            path_str(&generated),
+        ],
+    );
+    assert!(out.status.success());
+
+    // Pre-filled but not yet confirmed: check fails and lists the entries.
+    let check = |dir: &Path| {
+        sosie(
+            dir,
+            &[
+                "check",
+                "--from",
+                path_str(&dump),
+                "--config",
+                path_str(&generated),
+            ],
+        )
+    };
+    let out = check(&dir);
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("order.notes"), "{text}");
+    assert!(text.contains("# REVIEW"), "{text}");
+
+    // Confirmed: emptying `review:` is enough, the rules are already there.
+    let yaml = fs::read_to_string(&generated).unwrap();
+    let confirmed = format!("{}review: []\n", &yaml[..yaml.find("review:").unwrap()]);
+    fs::write(&generated, confirmed).unwrap();
+    let out = check(&dir);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn columns_patterns_cover_columns_and_exact_rules_win() {
+    let dir = scratch("patterns");
+    let config = dir.join("sosie.yaml");
+    // `*.email` covers user.email and nothing else; order.customer_email keeps
+    // its exact rule. `*.notes` is overridden by an exact `keep`.
+    fs::write(
+        &config,
+        r#"version: 1
+source: { kind: mysql }
+mode: anonymize
+tables:
+  user:
+    first_name: first_name
+    last_name: last_name
+    phone: phone
+    birth_date: { preset: date_shift, days: 365 }
+    password: null
+    api_token: null
+    nickname: null
+  address: { line1: address_line, line2: null, city: city, postcode: postcode }
+  order:
+    customer_email: email
+    notes: keep
+  bank_account: { iban: iban, bic: bic, holder_name: full_name }
+  product: { name: keep }
+skip_tables: [audit_log]
+columns:
+  "*.email": email
+  "*.notes": null
+  "nope_*.*": keep
+"#,
+    )
+    .unwrap();
+    let dump = fixture(BASIC_DUMP);
+    let out = sosie(
+        &dir,
+        &[
+            "check",
+            "--from",
+            path_str(&dump),
+            "--config",
+            path_str(&config),
+        ],
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
+    assert!(text.contains("`nope_*.*` matches no column"), "{text}");
+
+    let out = sosie(
+        &dir,
+        &[
+            "transform",
+            "--from",
+            path_str(&dump),
+            "--config",
+            path_str(&config),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sql = String::from_utf8_lossy(&out.stdout);
+    for pii in ORIGINAL_PII {
+        assert!(!sql.contains(pii), "`{pii}` survived the transform");
+    }
+    // `notes: keep` (exact) won over `*.notes: null`: the original text survives.
+    assert!(
+        sql.contains("Deliver before 6pm"),
+        "exact `keep` should win over the pattern"
+    );
 }
 
 #[test]

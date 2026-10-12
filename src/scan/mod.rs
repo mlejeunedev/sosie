@@ -51,123 +51,155 @@ fn normalize(name: &str) -> String {
     out
 }
 
-const EXCLUDED_GENERIC_NAME: &[&str] = &["table_name", "file_name", "class_name", "role_name"];
+/// A column name split into lowercase words: `contactFirstName` ->
+/// `["contact", "first", "name"]`. Patterns are matched against whole words, never
+/// substrings: `tel` must not match `hotel`, nor `nom` match `nombre`.
+struct Words(Vec<String>);
+
+impl Words {
+    fn of(column: &str) -> Self {
+        Words(
+            normalize(column)
+                .split(['_', '-', ' ', '.'])
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect(),
+        )
+    }
+
+    /// One of `patterns` appears as consecutive whole words: `"first_name"`
+    /// matches `contact_first_name`, `"tel"` matches `tel_portable` but not `hotel`.
+    fn has(&self, patterns: &[&str]) -> bool {
+        patterns.iter().any(|p| {
+            let seq: Vec<&str> = p.split('_').collect();
+            self.0
+                .windows(seq.len())
+                .any(|w| w.iter().zip(&seq).all(|(a, b)| a == b))
+        })
+    }
+
+    /// A word starts with one of `stems` (`birth` matches `birthdate`). Only for
+    /// stems that never begin an unrelated word.
+    fn has_prefix(&self, stems: &[&str]) -> bool {
+        self.0
+            .iter()
+            .any(|w| stems.iter().any(|s| w.starts_with(s)))
+    }
+
+    /// A word ends with one of `stems` (`token` matches `accesstoken`).
+    fn has_suffix(&self, stems: &[&str]) -> bool {
+        self.0.iter().any(|w| stems.iter().any(|s| w.ends_with(s)))
+    }
+
+    fn last(&self) -> &str {
+        self.0.last().map(String::as_str).unwrap_or("")
+    }
+}
+
+/// Trailing words that turn a sensitive-sounding name into metadata about it:
+/// `email_verified`, `address_id`, `phone_count`, `content_type`, `message_sent_at`.
+const METADATA_SUFFIXES: &[&str] = &[
+    "id", "ids", "uuid", "count", "type", "status", "enabled", "verified", "at",
+];
+
+/// Words that, right before `name`, denote a technical name rather than a
+/// person's (`table_name`, `host_name`). Also excluded glued (`filename`).
+const TECHNICAL_NAMES: &[&str] = &[
+    "table", "file", "class", "role", "host", "route", "column", "field", "domain", "path", "dir",
+    "method", "event", "template", "bucket", "queue", "job", "server", "database", "schema",
+    "index", "module", "service", "package", "device", "browser", "type",
+];
+
+fn is_technical_name(words: &Words) -> bool {
+    words.0.iter().enumerate().any(|(i, w)| {
+        let glued = w
+            .strip_suffix("name")
+            .is_some_and(|stem| TECHNICAL_NAMES.contains(&stem));
+        let split = w == "name" && i > 0 && TECHNICAL_NAMES.contains(&words.0[i - 1].as_str());
+        glued || split
+    })
+}
+
+fn sensitive(preset: &'static str, reason: &str) -> Classification {
+    Classification {
+        score: 0.9,
+        preset: Some(preset),
+        reason: reason.into(),
+    }
+}
 
 /// Signal 1: detection by column name. See `docs/CAHIER_DES_CHARGES.md` §5.5.
 pub fn classify_by_name(column: &str) -> Classification {
-    let n = normalize(column);
-    let hit = |patterns: &[&str]| patterns.iter().any(|p| n.contains(p));
+    let w = Words::of(column);
 
-    if hit(&["email", "mail", "courriel"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("email"),
-            reason: "name".into(),
-        };
+    if METADATA_SUFFIXES.contains(&w.last()) {
+        return Classification::none();
     }
-    if hit(&["first_name", "firstname", "prenom", "given_name"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("first_name"),
-            reason: "name".into(),
-        };
+
+    if w.has(&["email", "mail", "courriel"]) || w.has_prefix(&["email", "courriel"]) {
+        return sensitive("email", "name");
     }
-    if hit(&["last_name", "lastname", "surname", "family_name"])
-        || n.contains("nom") && !n.contains("prenom")
+    if w.has(&["first_name", "given_name", "prenom"]) || w.has_prefix(&["firstname", "prenom"]) {
+        return sensitive("first_name", "name");
+    }
+    if w.has(&["last_name", "family_name", "surname", "nom"])
+        || w.has_prefix(&["lastname", "surname"])
     {
-        return Classification {
-            score: 0.9,
-            preset: Some("last_name"),
-            reason: "name".into(),
-        };
+        return sensitive("last_name", "name");
     }
-    if hit(&["phone", "tel", "mobile", "telephone"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("phone"),
-            reason: "name".into(),
-        };
+    if w.has(&["phone", "tel", "mobile", "telephone"]) || w.has_prefix(&["phone", "telephone"]) {
+        return sensitive("phone", "name");
     }
-    if hit(&["iban", "bban", "account_number"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("iban"),
-            reason: "name".into(),
-        };
+    if w.has(&["iban", "bban", "account_number"]) {
+        return sensitive("iban", "name");
     }
-    if hit(&["bic", "swift"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("bic"),
-            reason: "name".into(),
-        };
+    if w.has(&["bic", "swift"]) {
+        return sensitive("bic", "name");
     }
-    if hit(&["ip_address", "remote_addr"]) || n == "ip" || n.ends_with("_ip") {
-        return Classification {
-            score: 0.9,
-            preset: Some("ip"),
-            reason: "name".into(),
-        };
+    if w.has(&["ip_address", "ip_addr", "remote_addr"]) || w.last() == "ip" {
+        return sensitive("ip", "name");
     }
-    if hit(&["address", "adresse", "street", "rue", "line1", "line2"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("address_line"),
-            reason: "name".into(),
-        };
+    if w.has(&["address", "adresse", "street", "rue", "line1", "line2"])
+        || w.has_prefix(&["address", "adresse"])
+    {
+        return sensitive("address_line", "name");
     }
-    if hit(&["city", "ville", "town"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("city"),
-            reason: "name".into(),
-        };
+    if w.has(&["city", "ville", "town"]) {
+        return sensitive("city", "name");
     }
-    if hit(&["zip", "postcode", "postal_code", "code_postal"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("postcode"),
-            reason: "name".into(),
-        };
+    if w.has(&["zip", "postcode", "postal_code", "code_postal"])
+        || w.has_prefix(&["zipcode", "postcode", "postalcode"])
+    {
+        return sensitive("postcode", "name");
     }
-    if hit(&["birth", "dob", "naissance"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("date_shift"),
-            reason: "name (birth)".into(),
-        };
+    if w.has(&["dob"]) || w.has_prefix(&["birth", "naissance"]) {
+        return sensitive("date_shift", "name (birth)");
     }
-    if hit(&["ssn", "nir", "secu", "social_security"]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("null"),
-            reason: "name".into(),
-        };
+    if w.has(&["ssn", "nir", "secu", "social_security", "securite_sociale"]) {
+        return sensitive("null", "name");
     }
-    if hit(&[
-        "password", "passwd", "pwd", "token", "secret", "api_key", "salt",
-    ]) {
-        return Classification {
-            score: 0.9,
-            preset: Some("null"),
-            reason: "name (token)".into(),
-        };
+    // No "secret"/"token" prefix: "secretary", "tokenizer".
+    if w.has(&["passwd", "pwd", "salt", "api_key", "secrets", "tokens"])
+        || w.has_prefix(&["password"])
+        || w.has_suffix(&["password", "token", "secret"])
+    {
+        return sensitive("null", "name (token)");
     }
-    if hit(&["siret", "siren", "vat", "tva"]) {
-        return Classification {
-            score: 0.5,
-            preset: None,
-            reason: "name (company identifier, no preset in v0.1)".into(),
-        };
+    if w.has(&["siret"]) {
+        return sensitive("siret", "name");
     }
-    if hit(&[
-        "note",
-        "comment",
-        "message",
-        "body",
-        "content",
-        "description",
-    ]) {
+    if w.has(&["siren"]) {
+        return sensitive("siren", "name");
+    }
+    // Not a VAT number when it is a rate or an amount ("vat_rate", "montant_tva").
+    if w.has(&["vat", "tva"])
+        && !w.has(&[
+            "rate", "taux", "amount", "montant", "percent", "pct", "total", "ht", "ttc",
+        ])
+    {
+        return sensitive("vat", "name");
+    }
+    if w.has(&["body", "content"]) || w.has_prefix(&["note", "comment", "message", "description"]) {
         return Classification {
             score: 0.5,
             preset: None,
@@ -176,14 +208,14 @@ pub fn classify_by_name(column: &str) -> Classification {
     }
 
     // Generic "name"/"holder" signal, combinable, with exclusions.
-    if !EXCLUDED_GENERIC_NAME.contains(&n.as_str()) {
+    if !is_technical_name(&w) {
         let mut score: f64 = 0.0;
         let mut hits = Vec::new();
-        if n.contains("name") {
+        if w.has_suffix(&["name"]) {
             score += 0.5;
             hits.push("name");
         }
-        if n.contains("holder") {
+        if w.has_suffix(&["holder"]) {
             score += 0.5;
             hits.push("holder");
         }
@@ -244,6 +276,32 @@ fn classify_by_content(sql_type: &SqlType, samples: &[Vec<u8>]) -> Classificatio
             score: 0.9,
             preset: Some("iban"),
             reason: "content (IBAN)".into(),
+        };
+    }
+    let siret_ratio = ratio(&|t: &str| is_luhn_number(t, 14));
+    if siret_ratio >= 0.8 {
+        return Classification {
+            score: 0.9,
+            preset: Some("siret"),
+            reason: "content (SIRET)".into(),
+        };
+    }
+    let siren_ratio = ratio(&|t: &str| is_luhn_number(t, 9));
+    if siren_ratio >= 0.8 {
+        return Classification {
+            score: 0.9,
+            preset: Some("siren"),
+            reason: "content (SIREN)".into(),
+        };
+    }
+    let vat_ratio = ratio(&|t: &str| {
+        presets::vat_fr_is_valid(&t.chars().filter(|c| !c.is_whitespace()).collect::<String>())
+    });
+    if vat_ratio >= 0.8 {
+        return Classification {
+            score: 0.9,
+            preset: Some("vat"),
+            reason: "content (VAT number)".into(),
         };
     }
     let phone_ratio = ratio(&|t: &str| is_phone(t));
@@ -313,8 +371,8 @@ fn is_ipv4(s: &str) -> bool {
 }
 
 fn is_ipv6(s: &str) -> bool {
-    let s = s.trim();
-    s.contains(':') && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
+    // A real parse: "1:10" (a scale) or "12:30:00" (a time) are not addresses.
+    s.trim().parse::<std::net::Ipv6Addr>().is_ok()
 }
 
 fn is_phone(s: &str) -> bool {
@@ -326,6 +384,12 @@ fn is_phone(s: &str) -> bool {
             && compact.starts_with('0')
             && compact.chars().all(|c| c.is_ascii_digit())
     }
+}
+
+/// `len` digits (spaces allowed) passing Luhn: SIREN (9) or SIRET (14).
+fn is_luhn_number(s: &str, len: usize) -> bool {
+    let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.len() == len && presets::luhn_is_valid(&compact)
 }
 
 fn is_iban(s: &str) -> bool {
@@ -478,54 +542,157 @@ pub fn needs_review(
         .collect()
 }
 
-/// Generates a starter `sosie.yaml`: columns `>= 0.8` with their suggested
-/// preset (a comment names the triggering signal), plus a `review` section
-/// for the `0.4..0.8` gray zone. Written by hand rather than through serde
-/// to preserve the comments.
-pub fn render_init_yaml(tables: &[ScannedTable]) -> String {
+/// A column name with the same rule in at least this many tables is written once,
+/// as a `columns: "*.<name>"` pattern.
+const PATTERN_MIN_TABLES: usize = 3;
+
+/// A starter config produced by `init`, with counters for the summary.
+pub struct InitConfig {
+    pub yaml: String,
+    /// Exact `tables.<table>.<column>` rules.
+    pub rules: usize,
+    /// `columns:` patterns.
+    pub patterns: usize,
+    /// Entries of the `review:` list (pre-filled rules to confirm).
+    pub to_review: usize,
+}
+
+/// A rule proposed by `init` for one column.
+struct Proposal<'a> {
+    table: &'a str,
+    column: &'a str,
+    rule: String,
+    /// Gray zone (`0.4..0.8`): pre-filled, but listed in `review:`.
+    review: bool,
+    reason: &'a str,
+}
+
+/// Generates a starter `sosie.yaml`. Columns `>= 0.8` get their suggested
+/// preset; gray-zone columns (`0.4..0.8`) get a cautious pre-filled rule (the
+/// suggested preset, else `null`) marked `# REVIEW` and listed in `review:`,
+/// which `check` requires to be emptied once confirmed. A column name sharing
+/// the same rule across enough tables becomes a single `columns` pattern.
+/// Written by hand rather than through serde to preserve the comments.
+pub fn render_init_yaml(tables: &[ScannedTable]) -> InitConfig {
     let classifications = classify(tables);
-    let mut by_table: BTreeMap<&str, Vec<(&str, &Classification)>> = BTreeMap::new();
-    for ((table, column), c) in &classifications {
-        if c.is_mandatory() {
-            by_table
-                .entry(table.as_str())
-                .or_default()
-                .push((column.as_str(), c));
+    let proposals: Vec<Proposal> = classifications
+        .iter()
+        .filter(|(_, c)| c.is_review())
+        .map(|((table, column), c)| Proposal {
+            table,
+            column,
+            rule: match c.preset {
+                Some("date_shift") => "{ preset: date_shift, days: 365 }".to_string(),
+                Some(preset) => preset.to_string(),
+                None => "null".to_string(),
+            },
+            review: !c.is_mandatory(),
+            reason: &c.reason,
+        })
+        .collect();
+
+    // Per column name, the most common (rule, review) becomes a pattern when
+    // shared by enough tables; the others stay exact rules, which take precedence.
+    let mut groups: BTreeMap<(&str, &str, bool), Vec<&Proposal>> = BTreeMap::new();
+    for p in &proposals {
+        groups
+            .entry((p.column, p.rule.as_str(), p.review))
+            .or_default()
+            .push(p);
+    }
+    let mut best: BTreeMap<&str, (&str, bool, usize)> = BTreeMap::new();
+    for ((column, rule, review), members) in &groups {
+        let groupable = !column.contains(['*', '.', '"', '\\']);
+        if groupable && members.len() >= PATTERN_MIN_TABLES {
+            let entry = best.entry(column).or_insert((rule, *review, 0));
+            if members.len() > entry.2 {
+                *entry = (rule, *review, members.len());
+            }
         }
     }
+    let in_pattern = |p: &Proposal| {
+        best.get(p.column)
+            .is_some_and(|&(r, rv, _)| r == p.rule && rv == p.review)
+    };
+
+    let mut by_table: BTreeMap<&str, Vec<&Proposal>> = BTreeMap::new();
+    for p in proposals.iter().filter(|p| !in_pattern(p)) {
+        by_table.entry(p.table).or_default().push(p);
+    }
+    let comment = |review: bool, reason: &str| {
+        if review {
+            format!("REVIEW: {reason}")
+        } else {
+            reason.to_string()
+        }
+    };
 
     let mut out = String::new();
     out.push_str("version: 1\n\n");
     out.push_str("source:\n  kind: mysql\n\n");
     out.push_str("mode: anonymize\n\n");
     out.push_str("defaults:\n  locale: fr_FR\n  on_unclassified: fail\n\n");
-    out.push_str("tables:\n");
+
+    let mut review_list: Vec<String> = Vec::new();
+    let mut rules = 0;
+    if by_table.is_empty() {
+        out.push_str("tables: {}\n");
+    } else {
+        out.push_str("tables:\n");
+    }
     for (table, columns) in &by_table {
         out.push_str(&format!("  {table}:\n"));
-        for (column, c) in columns {
-            let rule = match c.preset {
-                Some("date_shift") => "{ preset: date_shift, days: 365 }".to_string(),
-                Some(preset) => preset.to_string(),
-                None => "review".to_string(),
-            };
-            out.push_str(&format!("    {column}: {rule}  # {}\n", c.reason));
+        for p in columns {
+            out.push_str(&format!(
+                "    {}: {}  # {}\n",
+                p.column,
+                p.rule,
+                comment(p.review, p.reason)
+            ));
+            rules += 1;
+            if p.review {
+                review_list.push(format!("{}.{}  # {}", p.table, p.column, p.reason));
+            }
         }
     }
     out.push('\n');
 
+    if !best.is_empty() {
+        out.push_str("columns:\n");
+        for (column, &(rule, review, count)) in &best {
+            let mut reasons: Vec<&str> = groups[&(*column, rule, review)]
+                .iter()
+                .map(|p| p.reason)
+                .collect();
+            reasons.sort();
+            reasons.dedup();
+            let reason = format!("{} ({count} tables)", reasons.join(", "));
+            out.push_str(&format!(
+                "  \"*.{column}\": {rule}  # {}\n",
+                comment(review, &reason)
+            ));
+            if review {
+                review_list.push(format!("\"*.{column}\"  # {reason}"));
+            }
+        }
+        out.push('\n');
+    }
+
     out.push_str("review:\n");
-    let mut review: Vec<(&str, &str, &Classification)> =
-        needs_review(&classifications, |_, _| false, |_| false);
-    review.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-    if review.is_empty() {
+    if review_list.is_empty() {
         out.push_str("  []\n");
     } else {
-        for (table, column, c) in review {
-            out.push_str(&format!("  - {table}.{column}  # {}\n", c.reason));
+        for entry in &review_list {
+            out.push_str(&format!("  - {entry}\n"));
         }
     }
 
-    out
+    InitConfig {
+        yaml: out,
+        rules,
+        patterns: best.len(),
+        to_review: review_list.len(),
+    }
 }
 
 #[cfg(test)]
@@ -576,14 +743,91 @@ mod tests {
     }
 
     #[test]
+    fn company_identifiers_by_name() {
+        assert_eq!(classify_by_name("siret").preset, Some("siret"));
+        assert_eq!(classify_by_name("companySiren").preset, Some("siren"));
+        assert_eq!(classify_by_name("vat_number").preset, Some("vat"));
+        assert_eq!(classify_by_name("numero_tva").preset, Some("vat"));
+        assert!(classify_by_name("siret").is_mandatory());
+        // Not a VAT number: a substring, or a rate/amount.
+        assert_eq!(classify_by_name("is_private").score, 0.0);
+        assert_eq!(classify_by_name("vat_rate").preset, None);
+        assert_eq!(classify_by_name("montant_tva").preset, None);
+    }
+
+    #[test]
+    fn name_detection_matches_whole_words() {
+        for (column, preset) in [
+            ("userEmail", "email"),
+            ("customer_email", "email"),
+            ("emailAddress", "email"),
+            ("firstname", "first_name"),
+            ("contactFirstName", "first_name"),
+            ("nom", "last_name"),
+            ("nom_client", "last_name"),
+            ("tel", "phone"),
+            ("tel_portable", "phone"),
+            ("phoneNumber", "phone"),
+            ("zip_code", "postcode"),
+            ("postalCode", "postcode"),
+            ("line1", "address_line"),
+            ("addressLine1", "address_line"),
+            ("birthDate", "date_shift"),
+            ("date_of_birth", "date_shift"),
+            ("num_secu", "null"),
+            ("api_token", "null"),
+            ("remember_token", "null"),
+            ("password_hash", "null"),
+            ("client_ip", "ip"),
+        ] {
+            let c = classify_by_name(column);
+            assert_eq!(c.preset, Some(preset), "{column}");
+            assert!(c.is_mandatory(), "{column}");
+        }
+        assert!(classify_by_name("nickname").is_review());
+        assert!(classify_by_name("comments").is_review());
+    }
+
+    #[test]
+    fn name_detection_ignores_substrings_and_metadata() {
+        for column in [
+            "hotel",
+            "nombre",
+            "economy",
+            "is_true",
+            "security_level",
+            "mailing_status",
+            "cubic_meters",
+            "is_private",
+            "secretary",
+            "content_type",
+            "table_name",
+            "filename",
+            "address_id",
+            "email_verified",
+            "email_verified_at",
+            "message_count",
+        ] {
+            assert_eq!(classify_by_name(column).score, 0.0, "{column}");
+        }
+    }
+
+    #[test]
     fn content_matchers() {
         assert!(is_email("jean.dupont@gmail.com"));
         assert!(!is_email("not an email"));
         assert!(is_ip("82.64.12.201"));
         assert!(is_ip("2a01:cb00:1234::1"));
+        assert!(!is_ip("1:10"));
+        assert!(!is_ip("12:30:00"));
         assert!(is_phone("0612345678"));
         assert!(is_phone("+33 7 98 76 54 32"));
         assert!(is_iban("FR7630006000011234567890189"));
         assert!(!is_iban("FR7630006000011234567890188"));
+        assert!(is_luhn_number("732 829 320", 9));
+        assert!(!is_luhn_number("732829321", 9));
+        assert!(is_luhn_number("73282932000074", 14));
+        assert!(presets::vat_fr_is_valid("FR44732829320"));
+        assert!(!presets::vat_fr_is_valid("FR45732829320"));
     }
 }

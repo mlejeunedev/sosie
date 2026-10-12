@@ -24,14 +24,19 @@ pub struct Config {
     /// Per-table, per-column transformation rules: `tables.<table>.<column>`.
     #[serde(default)]
     pub tables: BTreeMap<String, BTreeMap<String, Rule>>,
+    /// Rules matching several columns at once: `columns."<table glob>.<column glob>"`,
+    /// in file order. An exact `tables` rule takes precedence.
+    #[serde(default, deserialize_with = "ordered_patterns")]
+    pub columns: Vec<(String, Rule)>,
     /// Tables emitted with their structure but no rows.
     #[serde(default)]
     pub skip_tables: Vec<String>,
     /// Same effect as `skip_tables` in v0.1.
     #[serde(default)]
     pub truncate_tables: Vec<String>,
-    /// Ambiguous `table.column` entries left by `init`; must be empty for
-    /// `check` to pass.
+    /// Rules pre-filled by `init` for ambiguous columns (`table.column` or a
+    /// `columns` pattern), awaiting human confirmation; must be empty for `check`
+    /// to pass.
     #[serde(default)]
     pub review: Vec<String>,
     #[serde(default)]
@@ -190,6 +195,55 @@ fn parse_rule_str(s: &str) -> std::result::Result<Rule, String> {
     })
 }
 
+/// Keeps `columns:` in file order (a `BTreeMap` would sort it), since the first
+/// matching pattern wins.
+fn ordered_patterns<'de, D>(deserializer: D) -> std::result::Result<Vec<(String, Rule)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mapping = Option::<serde_yaml::Mapping>::deserialize(deserializer)?.unwrap_or_default();
+    mapping
+        .into_iter()
+        .map(|(k, v)| {
+            let pattern = k
+                .as_str()
+                .ok_or_else(|| de::Error::custom("`columns` keys must be strings"))?
+                .to_string();
+            let rule = Rule::deserialize(v).map_err(de::Error::custom)?;
+            Ok((pattern, rule))
+        })
+        .collect()
+}
+
+/// `*`-only glob: `*` matches any run of characters, everything else is literal.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or("");
+    let Some(mut rest) = text.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(i) => rest = &rest[i + part.len()..],
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
+}
+
+/// Whether a `columns` pattern (`"<table glob>.<column glob>"`, split on the
+/// first `.`) matches `table.column`.
+pub fn pattern_matches(pattern: &str, table: &str, column: &str) -> bool {
+    match pattern.split_once('.') {
+        Some((t, c)) => glob_match(t, table) && glob_match(c, column),
+        None => false,
+    }
+}
+
 /// Secret-bearing keys that must never appear in a versioned config file.
 ///
 /// Only the root and `source` are checked: keys under `tables.*.*` are column
@@ -290,6 +344,20 @@ impl Config {
         Ok(config)
     }
 
+    /// Rule applying to `table.column`: the exact `tables` entry if any, else the
+    /// first matching `columns` pattern.
+    pub fn rule_for(&self, table: &str, column: &str) -> Option<&Rule> {
+        self.tables
+            .get(table)
+            .and_then(|cols| cols.get(column))
+            .or_else(|| {
+                self.columns
+                    .iter()
+                    .find(|(p, _)| pattern_matches(p, table, column))
+                    .map(|(_, r)| r)
+            })
+    }
+
     /// Semantic checks beyond deserialization: v0.1 support limits, preset
     /// names, and `SOSIE_KEY` presence in pseudonymize mode.
     fn validate(&self) -> Result<()> {
@@ -312,6 +380,17 @@ impl Config {
                 if let Rule::Preset { name, .. } = rule {
                     validate_preset_name(table, column, name)?;
                 }
+            }
+        }
+
+        for (pattern, rule) in &self.columns {
+            if !pattern.contains('.') {
+                bail!(
+                    "columns: pattern `{pattern}` must have the form `<table>.<column>` (`*` allowed, e.g. `*.description`)"
+                );
+            }
+            if let Rule::Preset { name, .. } = rule {
+                validate_preset_name("columns", pattern, name)?;
             }
         }
 
@@ -424,6 +503,57 @@ tables:
     key: keep
 "#;
         Config::parse(text).unwrap();
+    }
+
+    #[test]
+    fn glob_matching() {
+        assert!(pattern_matches("*.description", "product", "description"));
+        assert!(!pattern_matches(
+            "*.description",
+            "product",
+            "short_description"
+        ));
+        assert!(pattern_matches(
+            "*.*_description",
+            "product",
+            "short_description"
+        ));
+        assert!(pattern_matches("log_*.*", "log_2024", "payload"));
+        assert!(!pattern_matches("log_*.*", "user", "payload"));
+        assert!(pattern_matches("*.a*b*c", "t", "aXbYc"));
+        assert!(!pattern_matches("*.a*b*c", "t", "aXcYb"));
+        assert!(!pattern_matches("*.ab*ba", "t", "aba"));
+        assert!(!pattern_matches("description", "t", "description"));
+    }
+
+    #[test]
+    fn exact_rule_wins_over_pattern_and_first_pattern_wins() {
+        let text = r#"
+version: 1
+source: { kind: mysql }
+mode: anonymize
+tables:
+  product:
+    description: keep
+columns:
+  "*.description": null
+  "*.*": keep
+  "order.notes": email
+"#;
+        let config = Config::parse(text).unwrap();
+        assert_eq!(config.rule_for("product", "description"), Some(&Rule::Keep));
+        assert_eq!(config.rule_for("order", "description"), Some(&Rule::Null));
+        // File order, not specificity: "*.*" comes first.
+        assert_eq!(config.rule_for("order", "notes"), Some(&Rule::Keep));
+    }
+
+    #[test]
+    fn rejects_bad_patterns() {
+        let base = "version: 1\nsource: { kind: mysql }\nmode: anonymize\n";
+        let err = Config::parse(&format!("{base}columns:\n  description: null\n")).unwrap_err();
+        assert!(err.to_string().contains("<table>.<column>"), "{err}");
+        let err = Config::parse(&format!("{base}columns:\n  \"*.mail\": emial\n")).unwrap_err();
+        assert!(err.to_string().contains("email"), "{err}");
     }
 
     #[test]

@@ -28,6 +28,9 @@ pub const KNOWN_PRESETS: &[&str] = &[
     "city",
     "postcode",
     "ip",
+    "siren",
+    "siret",
+    "vat",
 ];
 
 /// Deterministic seed for a value: `HMAC-SHA256(key, preset || 0x00 || value)`.
@@ -51,8 +54,11 @@ pub fn seed_for(key: &[u8], preset: &str, value: &[u8]) -> Seed {
 }
 
 /// Context passed to a preset for the column it transforms.
-pub struct ColumnCtx {
+pub struct ColumnCtx<'k> {
     pub max_len: Option<u32>,
+    /// HMAC key of the run, for presets that derive a sub-seed from part of the
+    /// input (e.g. `siret` reuses the `siren` seed of its first 9 digits).
+    pub key: &'k [u8],
 }
 
 /// A preset maps a non-null, non-empty value to another value,
@@ -92,6 +98,9 @@ pub fn build(name: &str, params: &BTreeMap<String, serde_yaml::Value>) -> Result
             Ok(Box::new(PostcodePreset { keep_department }))
         }
         "ip" => Ok(Box::new(IpPreset)),
+        "siren" => Ok(Box::new(SirenPreset)),
+        "siret" => Ok(Box::new(SiretPreset)),
+        "vat" => Ok(Box::new(VatPreset)),
         other => bail!("unknown preset: {other}"),
     }
 }
@@ -385,6 +394,65 @@ impl Preset for IpPreset {
     }
 }
 
+// SIREN/SIRET/VAT are linked: a SIRET starts with its company's SIREN, and a
+// French VAT number embeds it too. The fake SIREN is always derived from the
+// `siren` seed of the original SIREN, so `company.siren`, `site.siret` and
+// `company.vat_number` stay consistent with each other after transformation.
+
+struct SirenPreset;
+impl Preset for SirenPreset {
+    fn apply<'a>(&self, input: &Value<'a>, seed: &Seed, _ctx: &ColumnCtx) -> Value<'a> {
+        let original = as_str(input).unwrap_or_default();
+        let original = String::from_utf8_lossy(&original);
+        let fake = fake_siren(&mut seed.rng());
+        str_owned(format_digits(&original, &fake))
+    }
+}
+
+struct SiretPreset;
+impl Preset for SiretPreset {
+    fn apply<'a>(&self, input: &Value<'a>, seed: &Seed, ctx: &ColumnCtx) -> Value<'a> {
+        let original = as_str(input).unwrap_or_default();
+        let original = String::from_utf8_lossy(&original);
+        let digits = digits_of(&original);
+        let mut rng = seed.rng();
+        let mut fake = if digits.len() == 14 {
+            fake_siren(&mut seed_for(ctx.key, "siren", &digits[..9]).rng())
+        } else {
+            fake_siren(&mut rng)
+        };
+        // NIC (establishment number): random, from the full-SIRET seed, so that
+        // two sites of the same company get distinct SIRETs.
+        fake.extend((0..4).map(|_| b'0' + rng.random_range(0..10u8)));
+        fake.push(luhn_check_digit(&fake));
+        str_owned(format_digits(&original, &fake))
+    }
+}
+
+struct VatPreset;
+impl Preset for VatPreset {
+    fn apply<'a>(&self, input: &Value<'a>, seed: &Seed, ctx: &ColumnCtx) -> Value<'a> {
+        let original = as_str(input).unwrap_or_default();
+        let original = String::from_utf8_lossy(&original);
+        let compact: String = original.chars().filter(|c| !c.is_whitespace()).collect();
+        let digits = digits_of(&compact);
+        let is_fr =
+            compact.len() == 13 && compact[..2].eq_ignore_ascii_case("FR") && digits.len() == 11;
+        if is_fr {
+            let siren = fake_siren(&mut seed_for(ctx.key, "siren", &digits[2..]).rng());
+            let mut fake = format!("{:02}", vat_fr_key(&siren)).into_bytes();
+            fake.extend_from_slice(&siren);
+            return str_owned(format_digits(&original, &fake));
+        }
+        // Other countries: same shape, country prefix kept, digits replaced.
+        let mut rng = seed.rng();
+        let fake: Vec<u8> = (0..digits.len())
+            .map(|_| b'0' + rng.random_range(0..10u8))
+            .collect();
+        str_owned(format_digits(&original, &fake))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // IBAN: check digit recomputation (ISO 7064 mod 97-10)
 // ---------------------------------------------------------------------------
@@ -419,6 +487,82 @@ fn iban_check_digits(country: &str, bban: &str) -> String {
     }
     let check = 98 - remainder;
     format!("{check:02}")
+}
+
+// ---------------------------------------------------------------------------
+// SIREN/SIRET (Luhn) and French VAT key
+// ---------------------------------------------------------------------------
+
+fn digits_of(s: &str) -> Vec<u8> {
+    s.bytes().filter(u8::is_ascii_digit).collect()
+}
+
+/// Writes `digits` over the digit positions of `original`, keeping its
+/// separators (`732 829 320` stays `ddd ddd ddd`). If the digit counts differ,
+/// returns `digits` bare.
+fn format_digits(original: &str, digits: &[u8]) -> String {
+    if digits_of(original).len() != digits.len() {
+        return String::from_utf8_lossy(digits).into_owned();
+    }
+    let mut next = digits.iter();
+    original
+        .chars()
+        .map(|c| match c {
+            '0'..='9' => *next.next().expect("same digit count") as char,
+            other => other,
+        })
+        .collect()
+}
+
+/// Random 9-digit SIREN (first digit non-zero) with a valid Luhn key.
+fn fake_siren(rng: &mut ChaCha8Rng) -> Vec<u8> {
+    let mut out = vec![b'0' + rng.random_range(1..10u8)];
+    out.extend((0..7).map(|_| b'0' + rng.random_range(0..10u8)));
+    out.push(luhn_check_digit(&out));
+    out
+}
+
+/// Digit to append to `digits` (ASCII) so that the whole passes Luhn.
+fn luhn_check_digit(digits: &[u8]) -> u8 {
+    let sum: u32 = digits
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, d)| {
+            let d = (d - b'0') as u32;
+            if i % 2 == 0 {
+                let x = d * 2;
+                if x > 9 { x - 9 } else { x }
+            } else {
+                d
+            }
+        })
+        .sum();
+    b'0' + ((10 - sum % 10) % 10) as u8
+}
+
+/// Luhn validation of an ASCII digit string (SIREN/SIRET). Used by `scan` for
+/// content-based detection.
+pub fn luhn_is_valid(digits: &str) -> bool {
+    let bytes = digits.as_bytes();
+    !bytes.is_empty()
+        && bytes.iter().all(u8::is_ascii_digit)
+        && luhn_check_digit(&bytes[..bytes.len() - 1]) == bytes[bytes.len() - 1]
+}
+
+/// French VAT key: `(12 + 3 × (SIREN mod 97)) mod 97`.
+fn vat_fr_key(siren: &[u8]) -> u64 {
+    let n: u64 = std::str::from_utf8(siren).unwrap().parse().unwrap();
+    (12 + 3 * (n % 97)) % 97
+}
+
+/// Validates a French VAT number (`FRkk` + SIREN, no spaces). Used by `scan`.
+pub fn vat_fr_is_valid(vat: &str) -> bool {
+    let bytes = vat.as_bytes();
+    bytes.len() == 13
+        && vat[..2].eq_ignore_ascii_case("FR")
+        && bytes[2..].iter().all(u8::is_ascii_digit)
+        && vat[2..4].parse::<u64>().ok() == Some(vat_fr_key(&bytes[4..]))
 }
 
 // ---------------------------------------------------------------------------
@@ -490,12 +634,18 @@ mod tests {
         let a = EmailPreset.apply(
             &Value::Str(Cow::Borrowed(b"x")),
             &seed(),
-            &ColumnCtx { max_len: None },
+            &ColumnCtx {
+                max_len: None,
+                key: b"k",
+            },
         );
         let b = EmailPreset.apply(
             &Value::Str(Cow::Borrowed(b"x")),
             &seed(),
-            &ColumnCtx { max_len: None },
+            &ColumnCtx {
+                max_len: None,
+                key: b"k",
+            },
         );
         assert_eq!(format!("{a:?}"), format!("{b:?}"));
     }
@@ -512,7 +662,10 @@ mod tests {
         let out = EmailPreset.apply(
             &Value::Str(Cow::Borrowed(b"whatever")),
             &seed(),
-            &ColumnCtx { max_len: None },
+            &ColumnCtx {
+                max_len: None,
+                key: b"k",
+            },
         );
         let Value::Str(s) = out else {
             panic!("expected Str")
@@ -535,7 +688,10 @@ mod tests {
             let out = EmailPreset.apply(
                 &Value::Str(Cow::Borrowed(input.as_bytes())),
                 &seed,
-                &ColumnCtx { max_len: None },
+                &ColumnCtx {
+                    max_len: None,
+                    key: b"k",
+                },
             );
             let Value::Str(s) = out else {
                 panic!("expected Str")
@@ -563,7 +719,10 @@ mod tests {
         let out = preset.apply(
             &Value::Str(Cow::Borrowed(b"1985-03-14")),
             &seed_for(b"k", "date_shift", b"1985-03-14"),
-            &ColumnCtx { max_len: None },
+            &ColumnCtx {
+                max_len: None,
+                key: b"k",
+            },
         );
         let Value::Str(s) = out else {
             panic!("expected Str")
@@ -577,7 +736,10 @@ mod tests {
         let out = IbanPreset.apply(
             &Value::Str(Cow::Borrowed(b"FR7630006000011234567890189")),
             &seed_for(b"k", "iban", b"FR7630006000011234567890189"),
-            &ColumnCtx { max_len: None },
+            &ColumnCtx {
+                max_len: None,
+                key: b"k",
+            },
         );
         let Value::Str(s) = out else {
             panic!("expected Str")
@@ -585,5 +747,59 @@ mod tests {
         let s = String::from_utf8(s.into_owned()).unwrap();
         assert_eq!(s.len(), "FR7630006000011234567890189".len());
         assert!(iban_is_valid(&s));
+    }
+
+    fn apply_str(preset: &dyn Preset, name: &str, input: &str) -> String {
+        let out = preset.apply(
+            &Value::Str(Cow::Borrowed(input.as_bytes())),
+            &seed_for(b"k", name, input.as_bytes()),
+            &ColumnCtx {
+                max_len: None,
+                key: b"k",
+            },
+        );
+        let Value::Str(s) = out else {
+            panic!("expected Str")
+        };
+        String::from_utf8(s.into_owned()).unwrap()
+    }
+
+    #[test]
+    fn siren_siret_vat_are_valid_and_consistent() {
+        let siren = apply_str(&SirenPreset, "siren", "732829320");
+        let siret = apply_str(&SiretPreset, "siret", "73282932000074");
+        let vat = apply_str(&VatPreset, "vat", "FR44732829320");
+
+        assert_eq!(siren.len(), 9);
+        assert!(luhn_is_valid(&siren));
+        assert_ne!(siren, "732829320");
+        assert!(luhn_is_valid(&siret));
+        assert!(vat_fr_is_valid(&vat));
+
+        // The same company keeps the same fake SIREN everywhere.
+        assert_eq!(&siret[..9], siren);
+        assert_eq!(&vat[4..], siren);
+    }
+
+    #[test]
+    fn sites_of_one_company_get_distinct_sirets() {
+        let a = apply_str(&SiretPreset, "siret", "73282932000074");
+        let b = apply_str(&SiretPreset, "siret", "73282932000090");
+        assert_eq!(a[..9], b[..9]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn company_identifiers_keep_their_formatting() {
+        let siren = apply_str(&SirenPreset, "siren", "732 829 320");
+        assert!(siren.chars().nth(3) == Some(' ') && siren.chars().nth(7) == Some(' '));
+        let siret = apply_str(&SiretPreset, "siret", "732 829 320 00074");
+        assert_eq!(siret.len(), "732 829 320 00074".len());
+        assert!(luhn_is_valid(&siret.replace(' ', "")));
+        let vat = apply_str(&VatPreset, "vat", "FR 44 732829320");
+        assert!(vat.starts_with("FR "));
+        assert!(vat_fr_is_valid(&vat.replace(' ', "")));
+        let foreign = apply_str(&VatPreset, "vat", "DE123456789");
+        assert!(foreign.starts_with("DE") && foreign.len() == 11);
     }
 }
