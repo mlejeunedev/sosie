@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `siren`, `siret` and `vat` presets: valid Luhn / VAT keys, input formatting kept, and the same fake SIREN shared by a company's SIREN, SIRET and French VAT number.
+- `init` now detects these columns by name (`siret`, `siren`, `vat`/`tva` as a whole word, excluding rates and amounts) and by content, and assigns the preset directly instead of leaving them in `review`.
+- `columns:` section: rules matching several columns with a `*` glob on `table.column` (`"*.description": null`). An exact `tables` rule takes precedence; otherwise the first matching pattern, in file order, wins. `check` warns about patterns that match no column.
+- `init` groups a column name that gets the same rule in at least 3 tables into a single `columns` pattern, and prints a summary (rules, patterns, decisions to confirm).
+
+### Changed
+
+- `init` pre-fills ambiguous (grey-zone) columns with a cautious rule (the suggested preset, else `null`) marked `# REVIEW`, instead of only listing them: confirming a decision now means reviewing a line, not writing it.
+- **`check` now fails while `review:` is not empty.** Once the `# REVIEW` rules are checked (switch harmless columns to `keep`), empty the list. Existing configs that kept entries in `review:` must clear them.
+- Column names are matched as whole words instead of substrings: `hotel` is no longer a phone (`tel`), `nombre` a last name (`nom`), `is_true` an address (`rue`), `security_level` a social security number (`secu`). Names ending with a metadata word (`_id`, `_type`, `_count`, `_status`, `_verified`, `_at`…) are no longer flagged (`address_id`, `content_type`, `email_verified_at`). Content detection is unchanged.
+- IPv6 content detection uses a real address parse: values such as `1:10` or `12:30:00` are no longer taken for IP addresses.
+
 ## [0.1.0] - 2026-09-28
 
 First public release.

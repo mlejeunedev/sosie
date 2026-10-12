@@ -2,72 +2,181 @@
 
 > This document describes what the code actually does today. For installation and quick start, see the `README.md`; for rule values and modes, see [`CONFIGURATION.md`](CONFIGURATION.md).
 
-## Build and run
+## Installing
 
-```bash
-cargo build --release
-./target/release/sosie --help
-```
+See the [Installation section of the README](../README.md#installation): `cargo install --locked sosie` if you have Rust, a prebuilt binary otherwise. Contributors can also run from a checkout with `cargo run -- <command> ...`.
 
-Or directly during development: `cargo run -- <command> ...`.
+## The commands at a glance
 
-## The 4 commands
+| Command | What it's for | Reads | Writes | Run it… |
+|---|---|---|---|---|
+| [`sosie init`](#sosie-init--generate-a-starter-config) | Propose a `sosie.yaml` for your schema | a dump | `sosie.yaml` | once, at setup |
+| [`sosie check`](#sosie-check--verify-that-a-config-is-complete) | Verify the config covers every sensitive column | a dump + the config | nothing | after every config edit, in CI, before each `transform` |
+| [`sosie transform`](#sosie-transform--produce-the-anonymized-dump) | Produce the anonymized dump | a dump + the config | the clean dump | every time you need a fresh dump |
+| [`sosie presets`](#sosie-presets--list-available-presets) | Show the fake-value generators you can use in rules | nothing | nothing | while editing the config |
+
+Between `init` and `check` sits the only manual step: [reviewing the generated config](#reviewing-the-generated-config-the-human-step).
+
+`sosie --help` and `sosie <command> --help` print the options of each command.
 
 ### `sosie init` — generate a starter config
 
-Analyzes a dump (schema **and** content, a sample of 200 values per text column) and proposes a commented `sosie.yaml`.
+**What it's for:** writing a `sosie.yaml` by hand for a schema of dozens of tables would be long and error-prone. `init` does the bulk of it: it reads the dump (table structure **and** a sample of 200 values per text column), recognizes columns holding personal data, and writes a commented config with a rule for each of them.
+
+**Usage:**
 
 ```bash
 sosie init --from dump.sql --out sosie.yaml
 ```
 
-- Columns detected with a confidence ≥ 0.8 (name and/or content matching an email, phone, IBAN, address...) get a preset.
-- Ambiguous columns (confidence 0.4–0.8: `notes`, `nickname`, a JSON column containing a sensitive key...) end up in a `review:` section to be decided by hand.
-- The generated file is **not** ready to use: it has to be reviewed, and the `review` columns decided.
+| Option | Required | Meaning |
+|---|---|---|
+| `--from <file>` | yes | the `mysqldump` file to analyze |
+| `--out <file>` | no (default `sosie.yaml`) | the config file to write — **overwritten** if it exists |
+
+**What it produces:** each column gets a confidence score, from its name and its content.
+
+- **Sure (score ≥ 0.8)** — a name or content that clearly matches an email, a phone number, an IBAN, an address, a password… The column gets its rule with no further ado: `email: email  # name`.
+- **Unsure (score 0.4–0.8)** — free text (`notes`, `comments`), a generic `name`, a JSON column containing a sensitive key… Sosie can't decide alone, so it writes **a default rule** — the cautious one: the suggested preset if there is one, otherwise `null` (value erased) — marks the line `# REVIEW: <reason>`, and adds the column to the `review:` section at the end of the file.
+- **Neutral (score < 0.4)** — ids, prices, dates, statuses… Not written: copied as is.
+
+Two details that keep the file short:
+
+- A column name that gets the same rule in at least 3 tables is written once, as a `columns` pattern: `"*.phone": phone  # name (3 tables)`.
+- Names are matched as whole words: `tel` matches `tel_portable` but not `hotel`; metadata columns (`address_id`, `content_type`, `email_verified_at`) are not flagged.
+
+The terminal ends with a summary, e.g. `12 column rule(s), 1 pattern(s), 4 decision(s) to confirm`.
+
+**What you do next:** the file is **not** ready to use yet — `check` refuses it as long as `review:` isn't empty. Go through the [review step](#reviewing-the-generated-config-the-human-step) below.
+
+### Reviewing the generated config (the human step)
+
+This is the only moment where a human has to think, and it's on purpose: Sosie never decides alone that an ambiguous column is harmless.
+
+**The `review:` section is your to-do list.** It lists the columns where *you* have to decide. Each of them already has a rule, written higher up in the file by `init` — under `tables:` (or `columns:` for a pattern) — on a line ending with `# REVIEW`. That rule is a safe default, not a final decision.
+
+Example of what `init` generates:
+
+```yaml
+tables:
+  order:
+    customer_email: email    # name                <- sure: nothing to do
+    notes: null              # REVIEW: free text   <- guessed: to confirm
+  product:
+    name: full_name          # REVIEW: name (name) <- guessed: to confirm
+
+review:                      # <- your to-do list: one entry per # REVIEW line above
+  - order.notes  # free text
+  - product.name  # name (name)
+```
+
+For each entry of `review:`:
+
+1. **Find its `# REVIEW` line** above (`order.notes` → table `order`, column `notes`).
+2. **Decide.** Ask yourself: "can this column contain something about a real person?"
+   - Yes, or not sure → keep the default rule (it erases or fakes the value), or pick a more fitting one (`constant("…")`, another preset — see [`CONFIGURATION.md`](CONFIGURATION.md)).
+   - No (a product name, a technical label) → replace the rule by `keep`.
+   - The whole table is at risk and not useful locally → put the table in `skip_tables` instead.
+3. **Delete the entry** from `review:`.
+
+Result for the example above:
+
+```yaml
+tables:
+  order:
+    customer_email: email    # name
+    notes: null              # customers write their phone number here: default kept
+  product:
+    name: keep               # a product name, not a person
+
+review: []                   # everything decided
+```
+
+Good to know:
+
+- You may delete the `# REVIEW` comments or leave them: Sosie ignores comments. Only the `review:` list counts.
+- **An exact line always wins over a pattern.** If you add `columns: { "*.description": keep }` to settle all descriptions at once, also delete the `description: null  # REVIEW` lines from `tables:` — otherwise they still apply to their columns.
+- Emptying `review:` without reading the rules makes `check` pass, but defeats its purpose: the defaults are cautious, not necessarily right (a product `name` would be replaced by a person's name).
 
 ### `sosie check` — verify that a config is complete
+
+**What it's for:** making sure no sensitive column slips through — after you edited the config, and every time the database schema changes (a new `phone` column added by a migration has no rule yet). Its exit code (0 = OK, 1 = problem) makes it a natural CI step.
+
+**Usage:**
 
 ```bash
 sosie check --from dump.sql --config sosie.yaml
 ```
 
-Re-analyzes the dump and compares it with the config file:
+| Option | Required | Meaning |
+|---|---|---|
+| `--from <file>` | yes | the dump to analyze (the same kind of dump you will transform) |
+| `--config <file>` | yes | the `sosie.yaml` to verify |
 
-- any column detected as sensitive (≥ 0.8) without an explicit rule → failure (exit code 1);
-- any grey-zone column (0.4–0.8) without an explicit rule → failure too;
-- tables listed in `skip_tables`/`truncate_tables` are exempt (they come out without data anyway);
-- `GENERATED` columns are ignored (they never appear in an `INSERT`).
+**What it checks:** it re-analyzes the dump like `init`, then compares with the config. It fails (exit code 1) if:
 
-`check` should pass before you run `transform` with confidence — but `transform` also has its own minimal safeguard (see below). Its exit code makes it a natural CI step.
+- a column detected as sensitive (score ≥ 0.8) has no rule;
+- an unsure column (score 0.4–0.8) has no rule;
+- the `review:` list isn't empty (decisions not yet confirmed).
 
-### `sosie transform` — transform the dump
+A rule counts whether it comes from `tables` or from a `columns` pattern. Tables in `skip_tables`/`truncate_tables` are exempt (they come out without data anyway), and `GENERATED` columns are ignored (they never appear in an `INSERT`). A `columns` pattern that matches no column of the dump triggers a warning (likely a typo), without failing.
+
+**What you see:**
+
+```bash
+$ sosie check --from dump.sql --config sosie.yaml
+check OK: 6 tables, no sensitive column without a rule.
+```
+
+or, when something is missing, the list of columns concerned and what to do:
+
+```
+Sensitive columns without a rule (score >= 0.8):
+  user.phone  — name
+2 pre-filled decision(s) to confirm (lines marked `# REVIEW` in the config):
+  order.notes
+  product.name
+
+check FAILED.
+```
+
+**What you do next:** add the missing rules / finish the review, and run `check` again until it says `OK`.
+
+### `sosie transform` — produce the anonymized dump
+
+**What it's for:** the actual job. It reads the original dump, applies the config's rules column by column, and writes a new dump where personal data is replaced by fake but plausible values. Everything the config doesn't touch is copied byte for byte.
+
+**Usage:**
 
 ```bash
 sosie transform --from dump.sql --config sosie.yaml --out dump_clean.sql
-# or as a pipe, the way mysqldump would be used:
+# or as a pipe, straight from mysqldump, without an intermediate file:
 mysqldump my_db | sosie transform --config sosie.yaml > dump_clean.sql
 ```
 
-Options:
+| Option | Required | Meaning |
+|---|---|---|
+| `--config <file>` | yes | the `sosie.yaml` to apply |
+| `--from <file>` | no (default: stdin) | the original dump |
+| `--out <file>` | no (default: stdout) | the anonymized dump. On a regular file the write is atomic: a temporary file is renamed at the end, and deleted on error — never a partial output under the final name. Devices and pipes such as `/dev/null` are written to directly. |
+| `--dry-run` | no | does everything (parse, transform) without writing the output — handy to validate a config on a big dump |
+| `--verbose` | no | details the final summary column by column (transformed / null / kept / truncated) |
 
-- `--from <file>`: reads `stdin` by default.
-- `--out <file>`: writes to `stdout` by default. With `--out` on a regular file, the write is atomic (temporary file then rename; on error, the temporary file is deleted — never a partial output under the final name). Devices and pipes such as `/dev/null` are written to directly.
-- `--dry-run`: does everything (parse, transform) without writing the output.
-- `--verbose`: details the final summary column by column (transformed / null / kept / truncated).
+**Built-in safeguard:** if a column has no rule **and** its name looks sensitive (email, password, iban, phone...), `transform` refuses to start, even if `check` was never run. It's a last-resort net based on names only — run `check` for the full analysis. It does not look at `review:`: the rules written by `init` apply as they are, which is why `check` must pass first.
 
-Built-in safeguard: if a column has no rule in the config **and** its name matches a sensitive pattern (email, password, iban, phone...), `transform` refuses to start — without needing `check` to have run first. It is a last-resort safety net based on the name only (not the content, which would require replaying the whole dump).
+**What you see:** while running, a progress bar on stderr (percentage, throughput, ETA, current table and rows) when `--from` is a file, a spinner with bytes read when reading stdin; hidden automatically when stderr is not a terminal (CI, redirection). At the end, a compact summary — one overall line, one line per transformed table (rows and number of columns touched), skipped tables, tables copied without transformation grouped on one line, and a `⚠` warning only if values had to be truncated. A full report is written to `.sosie/last-report.json` — counters only, never a real value. When the dump goes to stdout (no `--out`), the summary goes to stderr so it never mixes with the SQL.
 
-While running: a progress bar on stderr (percentage, throughput, ETA, current table and rows processed) when `--from` is a file, a spinner with bytes read when the input comes from stdin. It is hidden automatically when stderr is not a terminal (CI, redirection).
-
-At the end: a compact summary in the terminal — one overall line, one line per transformed table (rows and number of columns touched), skipped tables, tables output without transformation grouped on one line, and a `⚠` warning only if values had to be truncated. With `--verbose`, the column-by-column detail. A full report is written to `.sosie/last-report.json` — counters only, never a real value. When the dump goes to stdout (no `--out`), the summary is sent to stderr so it never mixes with the SQL.
+**What you do next:** import the result (`mysql my_db_dev < dump_clean.sql`).
 
 ### `sosie presets` — list available presets
+
+**What it's for:** while editing the config, seeing which fake-value generators exist and what they produce.
 
 ```bash
 sosie presets
 ```
 
-Displays each preset with an input/output example generated on the fly.
+Prints each preset with an input → output example generated on the fly. The full list with their parameters is in [Available presets](#available-presets) below.
 
 ## Walkthrough: cloning a `shop` database locally without PII
 
@@ -85,9 +194,20 @@ mysqldump --single-transaction shop > dump.sql
 sosie init --from dump.sql --out sosie.yaml
 ```
 
-Sosie scans the schema *and* the data, and produces a YAML file with the obvious columns already covered (`email`, `iban`, `phone`, `birth_date`...) and a `review:` section for what it can't decide on its own:
+Sosie scans the schema *and* the data, and produces a YAML file with the obvious columns already covered (`email`, `iban`, `phone`, `birth_date`...). For what it can't decide on its own, it writes a default rule marked `# REVIEW`, and lists the column in `review:` — your to-do list:
 
 ```yaml
+tables:
+  audit_log:
+    payload: null  # REVIEW: JSON containing a sensitive key
+  order:
+    notes: null  # REVIEW: free text
+  product:
+    name: full_name  # REVIEW: name (name)
+  user:
+    nickname: full_name  # REVIEW: name (name)
+    ...
+
 review:
   - audit_log.payload  # JSON containing a sensitive key
   - order.notes  # free text
@@ -95,7 +215,14 @@ review:
   - user.nickname  # name (name)
 ```
 
-**3. Decide the ambiguous cases** — the only moment a human has to think. Edit the generated YAML: `order.notes: null`, `user.nickname: null`, `product.name: keep` (a product name, not a person), and put the whole `audit_log` table in `skip_tables` (its JSON `payload` contains plain-text emails, not worth parsing finely).
+**3. Confirm the ambiguous cases** — the only moment a human has to think (see [Reviewing the generated config](#reviewing-the-generated-config-the-human-step)). Going through the 4 entries of `review:`:
+
+- `order.notes: null` — customers write phone numbers in it: the default is right, nothing to change.
+- `product.name: keep` — a product name, not a person: the default `full_name` would replace "Wireless mouse" by "Jean Martin", so switch it to `keep`.
+- `user.nickname: null` — a nickname can identify someone and is useless locally: erase it rather than fake it.
+- `audit_log.payload` — its JSON contains plain-text emails, not worth parsing finely: delete the `payload` line and put the whole `audit_log` table in `skip_tables`.
+
+Then empty the list: `review: []`.
 
 **4. Check before running anything**
 
@@ -159,10 +286,14 @@ tables:
     api_token: null                                 # -> NULL (or empty string if the column is NOT NULL)
     id: keep                                        # copied as is, explicitly
 
+columns:                # one rule for several columns; an exact `tables` rule wins
+  "*.description": null
+  "*.*_email": email
+
 skip_tables:
   - audit_log           # structure kept, zero rows in the output
 
-review: []              # informative, filled by `init`; `check` doesn't rely on it
+review: []              # pre-filled decisions to confirm, filled by `init`; must be empty for `check` to pass
 ```
 
 Important points:
@@ -186,6 +317,9 @@ For the details of the 4 possible rule values (`keep`/`null`/`constant`/preset) 
 | `city` | City picked from an embedded fr_FR list |
 | `postcode` | Plausible postcode; `keep_department: true` keeps the first 2 digits |
 | `ip` | Address in a documentation range (RFC 5737 / 2001:db8::) |
+| `siren` | 9-digit SIREN with a valid Luhn key, same formatting as the input (`732 829 320`) |
+| `siret` | 14-digit SIRET with a valid Luhn key; its first 9 digits are the fake SIREN of the original company, so sites of one company stay grouped |
+| `vat` | French VAT number `FRkk` + fake SIREN with a recomputed key (consistent with `siren`/`siret`); other countries keep their prefix, digits replaced |
 | `hash` | Hex of the HMAC, for opaque identifiers |
 
 Rules common to all presets: `NULL` stays `NULL`, an empty string stays empty, the output is truncated to the column size (`VARCHAR(n)`), and the same input value always gives the same output for the same preset and the same key (determinism).
