@@ -217,16 +217,15 @@ fn cmd_init(args: InitArgs) -> Result<bool> {
     std::fs::write(&args.out, &init.yaml)
         .with_context(|| format!("writing {}", args.out.display()))?;
     println!(
-        "{} generated from {}: {} column rule(s), {} pattern(s), {} decision(s) to confirm.",
+        "{} generated from {}: {} rule(s), {} decision(s) to make in `review:`.",
         args.out.display(),
         args.from.display(),
         init.rules,
-        init.patterns,
         init.to_review
     );
     if init.to_review > 0 {
         println!(
-            "Review the `# REVIEW` lines (switch harmless ones to `keep`), empty `review:`, then run `sosie check`."
+            "For each `review` line: move it to `columns:` to confirm its rule, or move its key to `exclude:` to keep the column as is. Then run `sosie check`."
         );
     } else {
         println!("Review it and adjust the presets before running `sosie check`.");
@@ -248,18 +247,36 @@ fn cmd_check(args: CheckArgs) -> Result<bool> {
     let review = scan::needs_review(&classifications, has_rule, exempt);
 
     // A pattern covering nothing is most likely a typo: warn, don't fail.
-    for (pattern, _) in &config.columns {
+    for (pattern, section) in config.patterns() {
         let used = tables.iter().any(|t| {
             t.columns
                 .iter()
                 .any(|c| sosie::config::pattern_matches(pattern, &t.name, &c.name))
         });
         if !used {
-            println!("warning: columns pattern `{pattern}` matches no column of the dump");
+            println!("warning: {section} pattern `{pattern}` matches no column of the dump");
         }
     }
 
-    if missing.is_empty() && review.is_empty() && config.review.is_empty() {
+    // A column must be decided in one place: a `review`/`exclude` entry that also
+    // has a rule elsewhere is ambiguous.
+    let mut conflicts = Vec::new();
+    for table in tables.iter().filter(|t| !exempt(&t.name)) {
+        for column in table.columns.iter().filter(|c| !c.generated) {
+            let decisions = config.decisions_for(&table.name, &column.name);
+            if decisions.len() > 1 {
+                let sections: Vec<&str> = decisions.iter().map(|d| d.section()).collect();
+                conflicts.push(format!(
+                    "{}.{}  — in {}",
+                    table.name,
+                    column.name,
+                    sections.join(" and ")
+                ));
+            }
+        }
+    }
+
+    if missing.is_empty() && review.is_empty() && conflicts.is_empty() && config.review.is_empty() {
         println!(
             "check OK: {} tables, no sensitive column without a rule.",
             tables.len()
@@ -279,22 +296,32 @@ fn cmd_check(args: CheckArgs) -> Result<bool> {
             println!("  {table}.{column}  — {}", c.reason);
         }
     }
+    if !conflicts.is_empty() {
+        println!("Columns decided in several places (keep a single one):");
+        for conflict in &conflicts {
+            println!("  {conflict}");
+        }
+    }
     if !config.review.is_empty() {
-        println!(
-            "{} pre-filled decision(s) to confirm (lines marked `# REVIEW` in the config):",
-            config.review.len()
-        );
-        for entry in &config.review {
-            println!("  {entry}");
+        println!("{} decision(s) left in `review:`:", config.review.len());
+        for (key, _) in &config.review {
+            println!("  {key}");
         }
     }
     println!("\ncheck FAILED.");
     if !missing.is_empty() || !review.is_empty() {
-        println!("Add an explicit rule (or `keep`) for each uncovered column above.");
+        println!(
+            "Add a rule for each uncovered column above (in `tables`/`columns`), or list it in `exclude` if it is harmless."
+        );
+    }
+    if !conflicts.is_empty() {
+        println!(
+            "A column in `review` or `exclude` must not also have a rule in `tables`/`columns`: remove one of them."
+        );
     }
     if !config.review.is_empty() {
         println!(
-            "Check each `# REVIEW` rule (switch it to `keep` if the data is harmless), then empty the `review:` list."
+            "For each `review` entry: move the line to `columns:` to confirm its rule, or move its key to `exclude:` to keep the column as is."
         );
     }
     Ok(false)
