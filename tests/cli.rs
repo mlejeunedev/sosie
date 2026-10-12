@@ -103,17 +103,18 @@ fn init_generates_config_for_sensitive_columns() {
         "first_name: first_name",
         "iban: iban",
         "ip_address: ip",
-        "notes: null  # REVIEW",
-        "payload: null  # REVIEW",
-        "- order.notes",
-        "- audit_log.payload",
+        "exclude: []",
+        "  order.notes: null  # free text",
+        "  audit_log.payload: null  # JSON",
     ] {
         assert!(yaml.contains(expected), "missing `{expected}` in:\n{yaml}");
     }
+    // An ambiguous column lives in `review:` only, never also in `tables:`.
+    assert!(!yaml.contains("    notes:"), "{yaml}");
 }
 
 #[test]
-fn check_requires_the_review_list_to_be_emptied() {
+fn review_entries_must_be_moved_to_columns_or_exclude() {
     let dir = scratch("init-review");
     let generated = dir.join("sosie.yaml");
     let dump = fixture(BASIC_DUMP);
@@ -128,8 +129,6 @@ fn check_requires_the_review_list_to_be_emptied() {
         ],
     );
     assert!(out.status.success());
-
-    // Pre-filled but not yet confirmed: check fails and lists the entries.
     let check = |dir: &Path| {
         sosie(
             dir,
@@ -142,21 +141,45 @@ fn check_requires_the_review_list_to_be_emptied() {
             ],
         )
     };
+
+    // Decisions pending: check fails and lists them.
     let out = check(&dir);
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("left in `review:`"), "{text}");
     assert!(text.contains("order.notes"), "{text}");
-    assert!(text.contains("# REVIEW"), "{text}");
 
-    // Confirmed: emptying `review:` is enough, the rules are already there.
     let yaml = fs::read_to_string(&generated).unwrap();
-    let confirmed = format!("{}review: []\n", &yaml[..yaml.find("review:").unwrap()]);
-    fs::write(&generated, confirmed).unwrap();
+    let head = &yaml[..yaml.find("review:\n").unwrap()];
+
+    // Emptying `review:` without deciding drops the default rules: still failing.
+    fs::write(&generated, format!("{head}review: {{}}\n")).unwrap();
+    assert!(!check(&dir).status.success());
+
+    // Each entry moved to `columns` (rule confirmed) or `exclude` (kept as is).
+    let decided = head
+        .replace(
+            "columns: {}",
+            "columns:\n  order.notes: null\n  audit_log.payload: null\n  user.nickname: null",
+        )
+        .replace("exclude: []", "exclude:\n  - product.name");
+    fs::write(&generated, format!("{decided}review: {{}}\n")).unwrap();
     let out = check(&dir);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stdout)
+    );
+
+    // A column in `exclude` must not also have a rule.
+    let conflicting = decided.replace("  - product.name", "  - product.name\n  - \"*.notes\"");
+    fs::write(&generated, format!("{conflicting}review: {{}}\n")).unwrap();
+    let out = check(&dir);
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("order.notes  — in tables/columns and exclude"),
+        "{text}"
     );
 }
 

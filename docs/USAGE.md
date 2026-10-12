@@ -37,15 +37,15 @@ sosie init --from dump.sql --out sosie.yaml
 **What it produces:** each column gets a confidence score, from its name and its content.
 
 - **Sure (score ≥ 0.8)** — a name or content that clearly matches an email, a phone number, an IBAN, an address, a password… The column gets its rule with no further ado: `email: email  # name`.
-- **Unsure (score 0.4–0.8)** — free text (`notes`, `comments`), a generic `name`, a JSON column containing a sensitive key… Sosie can't decide alone, so it writes **a default rule** — the cautious one: the suggested preset if there is one, otherwise `null` (value erased) — marks the line `# REVIEW: <reason>`, and adds the column to the `review:` section at the end of the file.
+- **Unsure (score 0.4–0.8)** — free text (`notes`, `comments`), a generic `name`, a JSON column containing a sensitive key… Sosie can't decide alone, so it writes the column **in the `review:` section only**, with **a default rule** — the cautious one: the suggested preset if there is one, otherwise `null` (value erased) — and the reason as a comment: `orders.comments: null  # free text`.
 - **Neutral (score < 0.4)** — ids, prices, dates, statuses… Not written: copied as is.
 
 Two details that keep the file short:
 
-- A column name that gets the same rule in at least 3 tables is written once, as a `columns` pattern: `"*.phone": phone  # name (3 tables)`.
+- A column name that gets the same rule in every table that has it (at least 3) is written once, as a pattern: `"*.phone": phone  # name (3 tables)` in `columns:`, or in `review:` for an unsure one.
 - Names are matched as whole words: `tel` matches `tel_portable` but not `hotel`; metadata columns (`address_id`, `content_type`, `email_verified_at`) are not flagged.
 
-The terminal ends with a summary, e.g. `12 column rule(s), 1 pattern(s), 4 decision(s) to confirm`.
+The file also contains an empty `exclude: []` section, ready for the columns you will want to keep as is. The terminal ends with a summary, e.g. `20 rule(s), 7 decision(s) to make in review:`.
 
 **What you do next:** the file is **not** ready to use yet — `check` refuses it as long as `review:` isn't empty. Go through the [review step](#reviewing-the-generated-config-the-human-step) below.
 
@@ -53,31 +53,38 @@ The terminal ends with a summary, e.g. `12 column rule(s), 1 pattern(s), 4 decis
 
 This is the only moment where a human has to think, and it's on purpose: Sosie never decides alone that an ambiguous column is harmless.
 
-**The `review:` section is your to-do list.** It lists the columns where *you* have to decide. Each of them already has a rule, written higher up in the file by `init` — under `tables:` (or `columns:` for a pattern) — on a line ending with `# REVIEW`. That rule is a safe default, not a final decision.
+**Each column is decided in one place only**, among four sections:
+
+| Section | What's in it | Who fills it |
+|---|---|---|
+| `tables:` | columns Sosie is sure about, with their rule | `init` |
+| `columns:` | rules for one or several columns (`"*.phone": phone`, `orders.comments: null`) | `init` (patterns), then you (confirmed `review` lines) |
+| `exclude:` | columns kept as is, never anonymized | you |
+| `review:` | columns Sosie isn't sure about, with a default rule | `init` — **you empty it** |
+
+**The `review:` section is your to-do list.** It lists the columns where *you* have to decide, each with the default rule `init` proposes — the safest one: it erases (`null`) or fakes the value. These columns appear **nowhere else** in the file. While they wait in `review:`, their default rule applies — a forgotten line never leaks data — but `sosie check` fails.
 
 Example of what `init` generates:
 
 ```yaml
 tables:
   order:
-    customer_email: email    # name                <- sure: nothing to do
-    notes: null              # REVIEW: free text   <- guessed: to confirm
-  product:
-    name: full_name          # REVIEW: name (name) <- guessed: to confirm
+    customer_email: email    # name        <- sure: nothing to do
 
-review:                      # <- your to-do list: one entry per # REVIEW line above
-  - order.notes  # free text
-  - product.name  # name (name)
+columns: {}
+
+exclude: []
+
+review:                      # <- your to-do list
+  order.notes: null          # free text
+  product.name: full_name    # name (name)
 ```
 
-For each entry of `review:`:
+For each line of `review:`, ask yourself "can this column contain something about a real person?", then **move** the line:
 
-1. **Find its `# REVIEW` line** above (`order.notes` → table `order`, column `notes`).
-2. **Decide.** Ask yourself: "can this column contain something about a real person?"
-   - Yes, or not sure → keep the default rule (it erases or fakes the value), or pick a more fitting one (`constant("…")`, another preset — see [`CONFIGURATION.md`](CONFIGURATION.md)).
-   - No (a product name, a technical label) → replace the rule by `keep`.
-   - The whole table is at risk and not useful locally → put the table in `skip_tables` instead.
-3. **Delete the entry** from `review:`.
+- **Yes, or not sure** → cut the whole line and paste it under `columns:`. Keep the default rule, or change it (`constant("…")`, another preset — see [`CONFIGURATION.md`](CONFIGURATION.md)). The rule is now confirmed.
+- **No** (a product name, a technical label, catalog text) → put its key in `exclude:` (`- product.name`) and delete the line. The column will be copied as is.
+- **The whole table is at risk and useless locally** → put the table in `skip_tables` and delete its lines.
 
 Result for the example above:
 
@@ -85,18 +92,21 @@ Result for the example above:
 tables:
   order:
     customer_email: email    # name
-    notes: null              # customers write their phone number here: default kept
-  product:
-    name: keep               # a product name, not a person
 
-review: []                   # everything decided
+columns:
+  order.notes: null          # customers write their phone number here: default confirmed
+
+exclude:
+  - product.name             # a product name, not a person
+
+review: {}                   # everything decided
 ```
 
 Good to know:
 
-- You may delete the `# REVIEW` comments or leave them: Sosie ignores comments. Only the `review:` list counts.
-- **An exact line always wins over a pattern.** If you add `columns: { "*.description": keep }` to settle all descriptions at once, also delete the `description: null  # REVIEW` lines from `tables:` — otherwise they still apply to their columns.
-- Emptying `review:` without reading the rules makes `check` pass, but defeats its purpose: the defaults are cautious, not necessarily right (a product `name` would be replaced by a person's name).
+- **A pattern settles many lines at once.** `- "*.*Description"` in `exclude:` keeps every column ending in `Description`; delete the corresponding `review:` lines.
+- **Never leave a column in two places.** A column in `exclude` or `review` that also has a rule in `tables`/`columns` is an error: `check` lists it, and `transform` refuses to run.
+- Emptying `review:` without moving its lines doesn't help: the columns lose their rule, and `check` reports them as undecided.
 
 ### `sosie check` — verify that a config is complete
 
@@ -117,9 +127,10 @@ sosie check --from dump.sql --config sosie.yaml
 
 - a column detected as sensitive (score ≥ 0.8) has no rule;
 - an unsure column (score 0.4–0.8) has no rule;
-- the `review:` list isn't empty (decisions not yet confirmed).
+- a column is decided in several places (in `review` or `exclude` *and* in `tables`/`columns`);
+- the `review:` section isn't empty (decisions not made yet).
 
-A rule counts whether it comes from `tables` or from a `columns` pattern. Tables in `skip_tables`/`truncate_tables` are exempt (they come out without data anyway), and `GENERATED` columns are ignored (they never appear in an `INSERT`). A `columns` pattern that matches no column of the dump triggers a warning (likely a typo), without failing.
+A column counts as decided whether it is in `tables`, `columns` (exact key or pattern) or `exclude`. Tables in `skip_tables`/`truncate_tables` are exempt (they come out without data anyway), and `GENERATED` columns are ignored (they never appear in an `INSERT`). A pattern (of `columns`, `exclude` or `review`) that matches no column of the dump triggers a warning (likely a typo), without failing.
 
 **What you see:**
 
@@ -133,14 +144,18 @@ or, when something is missing, the list of columns concerned and what to do:
 ```
 Sensitive columns without a rule (score >= 0.8):
   user.phone  — name
-2 pre-filled decision(s) to confirm (lines marked `# REVIEW` in the config):
+Columns decided in several places (keep a single one):
+  order.notes  — in tables/columns and exclude
+2 decision(s) left in `review:`:
   order.notes
   product.name
 
 check FAILED.
 ```
 
-**What you do next:** add the missing rules / finish the review, and run `check` again until it says `OK`.
+followed by a hint for each kind of problem.
+
+**What you do next:** add the missing rules, fix the duplicates, finish the review — then run `check` again until it says `OK`.
 
 ### `sosie transform` — produce the anonymized dump
 
@@ -162,7 +177,7 @@ mysqldump my_db | sosie transform --config sosie.yaml > dump_clean.sql
 | `--dry-run` | no | does everything (parse, transform) without writing the output — handy to validate a config on a big dump |
 | `--verbose` | no | details the final summary column by column (transformed / null / kept / truncated) |
 
-**Built-in safeguard:** if a column has no rule **and** its name looks sensitive (email, password, iban, phone...), `transform` refuses to start, even if `check` was never run. It's a last-resort net based on names only — run `check` for the full analysis. It does not look at `review:`: the rules written by `init` apply as they are, which is why `check` must pass first.
+**Built-in safeguard:** if a column has no rule **and** its name looks sensitive (email, password, iban, phone...), `transform` refuses to start, even if `check` was never run. It's a last-resort net based on names only — run `check` for the full analysis. It also refuses a column decided in several places. It does not require `review:` to be empty: pending entries apply their default rule — but run `check` first so that every decision has been made by a human.
 
 **What you see:** while running, a progress bar on stderr (percentage, throughput, ETA, current table and rows) when `--from` is a file, a spinner with bytes read when reading stdin; hidden automatically when stderr is not a terminal (CI, redirection). At the end, a compact summary — one overall line, one line per transformed table (rows and number of columns touched), skipped tables, tables copied without transformation grouped on one line, and a `⚠` warning only if values had to be truncated. A full report is written to `.sosie/last-report.json` — counters only, never a real value. When the dump goes to stdout (no `--out`), the summary goes to stderr so it never mixes with the SQL.
 
@@ -194,35 +209,47 @@ mysqldump --single-transaction shop > dump.sql
 sosie init --from dump.sql --out sosie.yaml
 ```
 
-Sosie scans the schema *and* the data, and produces a YAML file with the obvious columns already covered (`email`, `iban`, `phone`, `birth_date`...). For what it can't decide on its own, it writes a default rule marked `# REVIEW`, and lists the column in `review:` — your to-do list:
+Sosie scans the schema *and* the data, and produces a YAML file with the obvious columns already covered in `tables:` (`email`, `iban`, `phone`, `birth_date`...). What it can't decide on its own goes to `review:` — your to-do list — with a default rule:
 
 ```yaml
 tables:
-  audit_log:
-    payload: null  # REVIEW: JSON containing a sensitive key
-  order:
-    notes: null  # REVIEW: free text
-  product:
-    name: full_name  # REVIEW: name (name)
   user:
-    nickname: full_name  # REVIEW: name (name)
+    email: email  # name
     ...
 
+columns: {}
+
+exclude: []
+
 review:
-  - audit_log.payload  # JSON containing a sensitive key
-  - order.notes  # free text
-  - product.name  # name (name)
-  - user.nickname  # name (name)
+  audit_log.payload: null  # JSON containing a sensitive key
+  order.notes: null  # free text
+  product.name: full_name  # name (name)
+  user.nickname: full_name  # name (name)
 ```
 
-**3. Confirm the ambiguous cases** — the only moment a human has to think (see [Reviewing the generated config](#reviewing-the-generated-config-the-human-step)). Going through the 4 entries of `review:`:
+**3. Decide the ambiguous cases** — the only moment a human has to think (see [Reviewing the generated config](#reviewing-the-generated-config-the-human-step)). Going through the 4 lines of `review:`:
 
-- `order.notes: null` — customers write phone numbers in it: the default is right, nothing to change.
-- `product.name: keep` — a product name, not a person: the default `full_name` would replace "Wireless mouse" by "Jean Martin", so switch it to `keep`.
-- `user.nickname: null` — a nickname can identify someone and is useless locally: erase it rather than fake it.
-- `audit_log.payload` — its JSON contains plain-text emails, not worth parsing finely: delete the `payload` line and put the whole `audit_log` table in `skip_tables`.
+- `order.notes` — customers write phone numbers in it: the default `null` is right → move the line to `columns:`.
+- `user.nickname` — a nickname can identify someone and is useless locally: erase it rather than fake it → move the line to `columns:` as `user.nickname: null`.
+- `product.name` — a product name, not a person: the default `full_name` would replace "Wireless mouse" by "Jean Martin" → put `- product.name` in `exclude:`.
+- `audit_log.payload` — its JSON contains plain-text emails, not worth parsing finely → delete the line and put the whole `audit_log` table in `skip_tables`.
 
-Then empty the list: `review: []`.
+The end of the file now reads:
+
+```yaml
+columns:
+  order.notes: null
+  user.nickname: null
+
+exclude:
+  - product.name
+
+skip_tables:
+  - audit_log
+
+review: {}
+```
 
 **4. Check before running anything**
 
@@ -286,15 +313,21 @@ tables:
     api_token: null                                 # -> NULL (or empty string if the column is NOT NULL)
     id: keep                                        # copied as is, explicitly
 
-columns:                # one rule for several columns; an exact `tables` rule wins
-  "*.description": null
+columns:                # rules by key or pattern; an exact `tables` rule wins
   "*.*_email": email
+  order.notes: null
+
+exclude:                # kept as is, never anonymized
+  - product.name
+  - "*.*Description"
 
 skip_tables:
   - audit_log           # structure kept, zero rows in the output
 
-review: []              # pre-filled decisions to confirm, filled by `init`; must be empty for `check` to pass
+review: {}              # filled by `init`: columns to decide, with a default rule; must be empty for `check` to pass
 ```
+
+Each column is decided in **one place only**: `tables`/`columns`, `exclude` or `review`. Details in [`CONFIGURATION.md`](CONFIGURATION.md#where-a-column-is-decided-tables-columns-exclude-review).
 
 Important points:
 

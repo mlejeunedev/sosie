@@ -34,11 +34,17 @@ pub struct Config {
     /// Same effect as `skip_tables` in v0.1.
     #[serde(default)]
     pub truncate_tables: Vec<String>,
-    /// Rules pre-filled by `init` for ambiguous columns (`table.column` or a
-    /// `columns` pattern), awaiting human confirmation; must be empty for `check`
-    /// to pass.
+    /// Ambiguous columns left by `init`, each with a cautious default rule
+    /// (`"<table>.<column>": rule`, `*` allowed), in file order. The rules apply,
+    /// but `check` fails until every entry is moved to `columns` (rule
+    /// confirmed) or to `exclude` (column kept as is). The legacy list form
+    /// (`- table.column`) is accepted, without rules.
+    #[serde(default, deserialize_with = "review_entries")]
+    pub review: Vec<(String, Option<Rule>)>,
+    /// Columns deliberately left untouched (`<table>.<column>`, `*` allowed):
+    /// a quick `keep` for false positives and harmless data.
     #[serde(default)]
-    pub review: Vec<String>,
+    pub exclude: Vec<String>,
     #[serde(default)]
     pub sampling: Option<Sampling>,
 }
@@ -215,6 +221,55 @@ where
         .collect()
 }
 
+/// `review:` as an ordered map of default rules, or the legacy list of
+/// `table.column` strings (no rule).
+fn review_entries<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<(String, Option<Rule>)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<serde_yaml::Value>::deserialize(deserializer)? {
+        None => Ok(Vec::new()),
+        Some(serde_yaml::Value::Sequence(items)) => items
+            .into_iter()
+            .map(|item| match item {
+                serde_yaml::Value::String(key) => Ok((key, None)),
+                _ => Err(de::Error::custom("`review` list items must be strings")),
+            })
+            .collect(),
+        Some(value @ serde_yaml::Value::Mapping(_)) => Ok(ordered_patterns(value)
+            .map_err(de::Error::custom)?
+            .into_iter()
+            .map(|(k, r)| (k, Some(r)))
+            .collect()),
+        Some(_) => Err(de::Error::custom(
+            "`review` must be a map of `\"<table>.<column>\": rule`",
+        )),
+    }
+}
+
+/// Where a column is decided. A column must be decided in a single place:
+/// rules (`tables`/`columns`), `review` or `exclude`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Rules,
+    Review,
+    Exclude,
+}
+
+impl Decision {
+    pub fn section(self) -> &'static str {
+        match self {
+            Decision::Rules => "tables/columns",
+            Decision::Review => "review",
+            Decision::Exclude => "exclude",
+        }
+    }
+}
+
+static KEEP: Rule = Rule::Keep;
+
 /// `*`-only glob: `*` matches any run of characters, everything else is literal.
 fn glob_match(pattern: &str, text: &str) -> bool {
     let mut parts = pattern.split('*');
@@ -345,7 +400,9 @@ impl Config {
     }
 
     /// Rule applying to `table.column`: the exact `tables` entry if any, else the
-    /// first matching `columns` pattern.
+    /// first matching `columns` pattern, else the first matching `review` default,
+    /// else `keep` if `exclude` lists it. A column decided in several places is an
+    /// error reported by [`Config::decisions_for`], not resolved here.
     pub fn rule_for(&self, table: &str, column: &str) -> Option<&Rule> {
         self.tables
             .get(table)
@@ -356,6 +413,59 @@ impl Config {
                     .find(|(p, _)| pattern_matches(p, table, column))
                     .map(|(_, r)| r)
             })
+            .or_else(|| {
+                self.review
+                    .iter()
+                    .find(|(p, _)| pattern_matches(p, table, column))
+                    .and_then(|(_, r)| r.as_ref())
+            })
+            .or_else(|| {
+                self.exclude
+                    .iter()
+                    .any(|p| pattern_matches(p, table, column))
+                    .then_some(&KEEP)
+            })
+    }
+
+    /// Sections deciding `table.column`. More than one is a conflict: an entry
+    /// of `review` or `exclude` must not also have a rule elsewhere.
+    pub fn decisions_for(&self, table: &str, column: &str) -> Vec<Decision> {
+        let exact = self
+            .tables
+            .get(table)
+            .is_some_and(|c| c.contains_key(column));
+        let mut out = Vec::new();
+        if exact
+            || self
+                .columns
+                .iter()
+                .any(|(p, _)| pattern_matches(p, table, column))
+        {
+            out.push(Decision::Rules);
+        }
+        if self
+            .review
+            .iter()
+            .any(|(p, _)| pattern_matches(p, table, column))
+        {
+            out.push(Decision::Review);
+        }
+        if self
+            .exclude
+            .iter()
+            .any(|p| pattern_matches(p, table, column))
+        {
+            out.push(Decision::Exclude);
+        }
+        out
+    }
+
+    /// Every pattern of `columns`, `review` and `exclude`, with its section.
+    pub fn patterns(&self) -> impl Iterator<Item = (&str, &'static str)> {
+        let columns = self.columns.iter().map(|(p, _)| (p.as_str(), "columns"));
+        let review = self.review.iter().map(|(p, _)| (p.as_str(), "review"));
+        let exclude = self.exclude.iter().map(|p| (p.as_str(), "exclude"));
+        columns.chain(review).chain(exclude)
     }
 
     /// Semantic checks beyond deserialization: v0.1 support limits, preset
@@ -383,14 +493,36 @@ impl Config {
             }
         }
 
-        for (pattern, rule) in &self.columns {
+        for (pattern, section) in self.patterns() {
             if !pattern.contains('.') {
                 bail!(
-                    "columns: pattern `{pattern}` must have the form `<table>.<column>` (`*` allowed, e.g. `*.description`)"
+                    "{section}: `{pattern}` must have the form `<table>.<column>` (`*` allowed, e.g. `*.description`)"
                 );
             }
-            if let Rule::Preset { name, .. } = rule {
-                validate_preset_name("columns", pattern, name)?;
+        }
+        let rules = self.columns.iter().map(|(p, r)| ("columns", p, Some(r)));
+        let defaults = self.review.iter().map(|(p, r)| ("review", p, r.as_ref()));
+        for (section, pattern, rule) in rules.chain(defaults) {
+            if let Some(Rule::Preset { name, .. }) = rule {
+                validate_preset_name(section, pattern, name)?;
+            }
+        }
+
+        // The same key in two sections is a conflict visible without the dump
+        // (overlapping globs are reported by `check`/`transform`).
+        let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+        let exact = self
+            .tables
+            .iter()
+            .flat_map(|(t, cols)| cols.keys().map(move |c| (format!("{t}.{c}"), "tables")));
+        let keys = self.patterns().map(|(p, s)| (p.to_string(), s));
+        for (key, section) in exact.chain(keys) {
+            if let Some(first) = seen.insert(key.clone(), section)
+                && first != section
+            {
+                bail!(
+                    "`{key}` is in both `{first}` and `{section}`: decide each column in one place only"
+                );
             }
         }
 
@@ -545,6 +677,66 @@ columns:
         assert_eq!(config.rule_for("order", "description"), Some(&Rule::Null));
         // File order, not specificity: "*.*" comes first.
         assert_eq!(config.rule_for("order", "notes"), Some(&Rule::Keep));
+    }
+
+    #[test]
+    fn review_defaults_apply_and_exclude_keeps() {
+        let text = r#"
+version: 1
+source: { kind: mysql }
+mode: anonymize
+columns:
+  "*.phone": phone
+exclude:
+  - product.name
+  - "log_*.*"
+review:
+  order.notes: null
+  "*.description": full_name
+"#;
+        let config = Config::parse(text).unwrap();
+        assert_eq!(config.rule_for("order", "notes"), Some(&Rule::Null));
+        assert_eq!(config.rule_for("product", "name"), Some(&Rule::Keep));
+        assert_eq!(config.rule_for("log_2024", "payload"), Some(&Rule::Keep));
+        assert!(matches!(
+            config.rule_for("item", "description"),
+            Some(Rule::Preset { name, .. }) if name == "full_name"
+        ));
+        assert_eq!(config.rule_for("user", "id"), None);
+        assert_eq!(
+            config.decisions_for("order", "notes"),
+            vec![Decision::Review]
+        );
+        assert_eq!(config.decisions_for("user", "phone"), vec![Decision::Rules]);
+    }
+
+    #[test]
+    fn legacy_review_list_is_accepted_without_rules() {
+        let text =
+            "version: 1\nsource: { kind: mysql }\nmode: anonymize\nreview:\n  - order.notes\n";
+        let config = Config::parse(text).unwrap();
+        assert_eq!(config.review, vec![("order.notes".to_string(), None)]);
+        assert_eq!(config.rule_for("order", "notes"), None);
+    }
+
+    #[test]
+    fn same_column_in_two_sections_is_rejected() {
+        let base = "version: 1\nsource: { kind: mysql }\nmode: anonymize\n";
+        for extra in [
+            "tables:\n  product:\n    name: keep\nexclude:\n  - product.name\n",
+            "review:\n  product.name: full_name\nexclude:\n  - product.name\n",
+            "columns:\n  \"*.notes\": null\nreview:\n  \"*.notes\": null\n",
+        ] {
+            let err = Config::parse(&format!("{base}{extra}")).unwrap_err();
+            assert!(err.to_string().contains("in both"), "{err}");
+        }
+        // Overlapping globs are only detectable against a schema.
+        let text = format!("{base}columns:\n  order.notes: null\nexclude:\n  - \"*.notes\"\n");
+        let config = Config::parse(&text).unwrap();
+        assert_eq!(
+            config.decisions_for("order", "notes"),
+            vec![Decision::Rules, Decision::Exclude]
+        );
     }
 
     #[test]

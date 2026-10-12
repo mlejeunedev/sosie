@@ -543,17 +543,15 @@ pub fn needs_review(
 }
 
 /// A column name with the same rule in at least this many tables is written once,
-/// as a `columns: "*.<name>"` pattern.
+/// as a `"*.<name>"` pattern.
 const PATTERN_MIN_TABLES: usize = 3;
 
 /// A starter config produced by `init`, with counters for the summary.
 pub struct InitConfig {
     pub yaml: String,
-    /// Exact `tables.<table>.<column>` rules.
+    /// Confirmed rules: `tables` entries and `columns` patterns.
     pub rules: usize,
-    /// `columns:` patterns.
-    pub patterns: usize,
-    /// Entries of the `review:` list (pre-filled rules to confirm).
+    /// Entries of `review:` (default rules awaiting a human decision).
     pub to_review: usize,
 }
 
@@ -562,17 +560,35 @@ struct Proposal<'a> {
     table: &'a str,
     column: &'a str,
     rule: String,
-    /// Gray zone (`0.4..0.8`): pre-filled, but listed in `review:`.
+    /// Gray zone (`0.4..0.8`): goes to `review:` instead of the rules.
     review: bool,
     reason: &'a str,
 }
 
+/// One line of the generated config: a `"<table>.<column>"` key (possibly a
+/// `*.<column>` pattern) with its rule.
+struct Line {
+    key: String,
+    rule: String,
+    comment: String,
+}
+
+fn yaml_key(key: &str) -> String {
+    if key.starts_with('*') {
+        format!("\"{key}\"")
+    } else {
+        key.to_string()
+    }
+}
+
 /// Generates a starter `sosie.yaml`. Columns `>= 0.8` get their suggested
-/// preset; gray-zone columns (`0.4..0.8`) get a cautious pre-filled rule (the
-/// suggested preset, else `null`) marked `# REVIEW` and listed in `review:`,
-/// which `check` requires to be emptied once confirmed. A column name sharing
-/// the same rule across enough tables becomes a single `columns` pattern.
-/// Written by hand rather than through serde to preserve the comments.
+/// preset under `tables` (or a `columns` pattern). Gray-zone columns
+/// (`0.4..0.8`) go to `review:` only, with a cautious default rule (the
+/// suggested preset, else `null`): the human moves each line to `columns` to
+/// confirm it, or its key to `exclude` to keep the column as is. A column name
+/// sharing the same rule in every table that has it (at least 3) becomes a
+/// single `*.<name>` pattern. Written by hand rather than through serde to
+/// preserve the comments.
 pub fn render_init_yaml(tables: &[ScannedTable]) -> InitConfig {
     let classifications = classify(tables);
     let proposals: Vec<Proposal> = classifications
@@ -591,8 +607,14 @@ pub fn render_init_yaml(tables: &[ScannedTable]) -> InitConfig {
         })
         .collect();
 
-    // Per column name, the most common (rule, review) becomes a pattern when
-    // shared by enough tables; the others stay exact rules, which take precedence.
+    // A `*.<name>` pattern also matches the columns of that name it wasn't built
+    // from: only group when it covers every column of that name in the dump.
+    let mut name_count: BTreeMap<&str, usize> = BTreeMap::new();
+    for column in tables.iter().flat_map(|t| &t.columns) {
+        if !column.generated {
+            *name_count.entry(column.name.as_str()).or_default() += 1;
+        }
+    }
     let mut groups: BTreeMap<(&str, &str, bool), Vec<&Proposal>> = BTreeMap::new();
     for p in &proposals {
         groups
@@ -600,32 +622,51 @@ pub fn render_init_yaml(tables: &[ScannedTable]) -> InitConfig {
             .or_default()
             .push(p);
     }
-    let mut best: BTreeMap<&str, (&str, bool, usize)> = BTreeMap::new();
-    for ((column, rule, review), members) in &groups {
-        let groupable = !column.contains(['*', '.', '"', '\\']);
-        if groupable && members.len() >= PATTERN_MIN_TABLES {
-            let entry = best.entry(column).or_insert((rule, *review, 0));
-            if members.len() > entry.2 {
-                *entry = (rule, *review, members.len());
-            }
-        }
-    }
-    let in_pattern = |p: &Proposal| {
-        best.get(p.column)
-            .is_some_and(|&(r, rv, _)| r == p.rule && rv == p.review)
-    };
+    let grouped: BTreeMap<&str, (&str, bool, usize)> = groups
+        .iter()
+        .filter(|((column, _, _), members)| {
+            !column.contains(['*', '.', '"', '\\'])
+                && members.len() >= PATTERN_MIN_TABLES
+                && members.len() == name_count[column]
+        })
+        .map(|((column, rule, review), members)| (*column, (*rule, *review, members.len())))
+        .collect();
 
-    let mut by_table: BTreeMap<&str, Vec<&Proposal>> = BTreeMap::new();
-    for p in proposals.iter().filter(|p| !in_pattern(p)) {
-        by_table.entry(p.table).or_default().push(p);
-    }
-    let comment = |review: bool, reason: &str| {
-        if review {
-            format!("REVIEW: {reason}")
-        } else {
-            reason.to_string()
+    let mut exact: BTreeMap<&str, Vec<&Proposal>> = BTreeMap::new();
+    let mut patterns: Vec<Line> = Vec::new();
+    let mut review: Vec<Line> = Vec::new();
+    for p in &proposals {
+        if grouped.contains_key(p.column) {
+            continue;
         }
-    };
+        if p.review {
+            review.push(Line {
+                key: format!("{}.{}", p.table, p.column),
+                rule: p.rule.clone(),
+                comment: p.reason.to_string(),
+            });
+        } else {
+            exact.entry(p.table).or_default().push(p);
+        }
+    }
+    for (column, &(rule, is_review, count)) in &grouped {
+        let mut reasons: Vec<&str> = groups[&(*column, rule, is_review)]
+            .iter()
+            .map(|p| p.reason)
+            .collect();
+        reasons.sort();
+        reasons.dedup();
+        let line = Line {
+            key: format!("*.{column}"),
+            rule: rule.to_string(),
+            comment: format!("{} ({count} tables)", reasons.join(", ")),
+        };
+        if is_review {
+            review.push(line);
+        } else {
+            patterns.push(line);
+        }
+    }
 
     let mut out = String::new();
     out.push_str("version: 1\n\n");
@@ -633,71 +674,75 @@ pub fn render_init_yaml(tables: &[ScannedTable]) -> InitConfig {
     out.push_str("mode: anonymize\n\n");
     out.push_str("defaults:\n  locale: fr_FR\n  on_unclassified: fail\n\n");
 
-    let mut review_list: Vec<String> = Vec::new();
-    let mut rules = 0;
-    if by_table.is_empty() {
+    out.push_str("# Columns detected with confidence, with their rule.\n");
+    if exact.is_empty() {
         out.push_str("tables: {}\n");
     } else {
         out.push_str("tables:\n");
     }
-    for (table, columns) in &by_table {
+    for (table, columns) in &exact {
         out.push_str(&format!("  {table}:\n"));
         for p in columns {
-            out.push_str(&format!(
-                "    {}: {}  # {}\n",
-                p.column,
-                p.rule,
-                comment(p.review, p.reason)
-            ));
-            rules += 1;
-            if p.review {
-                review_list.push(format!("{}.{}  # {}", p.table, p.column, p.reason));
-            }
+            out.push_str(&format!("    {}: {}  # {}\n", p.column, p.rule, p.reason));
         }
     }
     out.push('\n');
 
-    if !best.is_empty() {
-        out.push_str("columns:\n");
-        for (column, &(rule, review, count)) in &best {
-            let mut reasons: Vec<&str> = groups[&(*column, rule, review)]
-                .iter()
-                .map(|p| p.reason)
-                .collect();
-            reasons.sort();
-            reasons.dedup();
-            let reason = format!("{} ({count} tables)", reasons.join(", "));
-            out.push_str(&format!(
-                "  \"*.{column}\": {rule}  # {}\n",
-                comment(review, &reason)
-            ));
-            if review {
-                review_list.push(format!("\"*.{column}\"  # {reason}"));
-            }
-        }
-        out.push('\n');
-    }
-
-    out.push_str("review:\n");
-    if review_list.is_empty() {
-        out.push_str("  []\n");
+    out.push_str(
+        "# One rule for several columns (`*` = anything). Confirmed `review` lines go here.\n",
+    );
+    if patterns.is_empty() {
+        out.push_str("columns: {}\n");
     } else {
-        for entry in &review_list {
-            out.push_str(&format!("  - {entry}\n"));
+        out.push_str("columns:\n");
+        for line in &patterns {
+            out.push_str(&format!(
+                "  {}: {}  # {}\n",
+                yaml_key(&line.key),
+                line.rule,
+                line.comment
+            ));
+        }
+    }
+    out.push('\n');
+
+    out.push_str(
+        "# Columns kept as is, never anonymized (false positives, harmless data).\n\
+         # Example: - products.productName\n",
+    );
+    out.push_str("exclude: []\n\n");
+
+    out.push_str(
+        "# TO DECIDE: columns that may hold personal data, with a cautious default rule\n\
+         # (applied as long as they stay here). For each line, either move it to `columns:`\n\
+         # to confirm the rule (or change it), or move its key to `exclude:` to keep the\n\
+         # column as is. `sosie check` fails until this section is empty.\n",
+    );
+    if review.is_empty() {
+        out.push_str("review: {}\n");
+    } else {
+        out.push_str("review:\n");
+        for line in &review {
+            out.push_str(&format!(
+                "  {}: {}  # {}\n",
+                yaml_key(&line.key),
+                line.rule,
+                line.comment
+            ));
         }
     }
 
     InitConfig {
         yaml: out,
-        rules,
-        patterns: best.len(),
-        to_review: review_list.len(),
+        rules: exact.values().map(Vec::len).sum::<usize>() + patterns.len(),
+        to_review: review.len(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
 
     #[test]
     fn classifies_basic_fixture_columns() {
@@ -753,6 +798,57 @@ mod tests {
         assert_eq!(classify_by_name("is_private").score, 0.0);
         assert_eq!(classify_by_name("vat_rate").preset, None);
         assert_eq!(classify_by_name("montant_tva").preset, None);
+    }
+
+    fn table(name: &str, columns: &[(&str, &[&str])]) -> ScannedTable {
+        ScannedTable {
+            name: name.to_string(),
+            columns: columns
+                .iter()
+                .map(|(column, samples)| ScannedColumn {
+                    name: column.to_string(),
+                    sql_type: SqlType::Text,
+                    generated: false,
+                    samples: samples.iter().map(|s| s.as_bytes().to_vec()).collect(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn init_groups_a_column_name_only_when_every_table_shares_the_rule() {
+        let tables = vec![
+            table(
+                "a",
+                &[("phone", &[]), ("notes", &[]), ("value", &["x@y.fr"])],
+            ),
+            table(
+                "b",
+                &[("phone", &[]), ("notes", &[]), ("value", &["x@y.fr"])],
+            ),
+            table(
+                "c",
+                &[("phone", &[]), ("notes", &[]), ("value", &["x@y.fr"])],
+            ),
+            // `value` here is not an email: a `*.value` pattern would wrongly cover it.
+            table("d", &[("value", &["42"])]),
+        ];
+        let init = render_init_yaml(&tables);
+        let yaml = &init.yaml;
+        assert!(
+            yaml.contains("  \"*.phone\": phone  # name (3 tables)"),
+            "{yaml}"
+        );
+        // Ambiguous: grouped too, but in `review`, after the rules.
+        let review = &yaml[yaml.find("review:\n").expect(yaml)..];
+        assert!(
+            review.contains("  \"*.notes\": null  # free text (3 tables)"),
+            "{yaml}"
+        );
+        assert!(!yaml.contains("*.value"), "{yaml}");
+        assert!(yaml.contains("    value: email"), "{yaml}");
+        assert_eq!(init.to_review, 1);
+        Config::parse(yaml).unwrap();
     }
 
     #[test]

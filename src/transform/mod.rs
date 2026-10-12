@@ -90,6 +90,17 @@ fn build_table_plan(config: &Config, table: &DumpTable) -> Result<TablePlan> {
         if col.unique {
             unique_columns.insert(col.name.clone());
         }
+        let decisions = config.decisions_for(&table.name, &col.name);
+        if !skip && !col.generated && decisions.len() > 1 {
+            let sections: Vec<&str> = decisions.iter().map(|d| d.section()).collect();
+            bail!(
+                "{}.{}: decided in several places ({}). Keep a single one: a `review` or \
+                 `exclude` entry must not also have a rule in `tables`/`columns`.",
+                table.name,
+                col.name,
+                sections.join(" and ")
+            );
+        }
         let rule = config.rule_for(&table.name, &col.name);
         let action = match rule {
             Some(Rule::Keep) => Action::Keep,
