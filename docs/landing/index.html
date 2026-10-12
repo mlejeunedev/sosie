@@ -259,8 +259,32 @@
     max-width: 560px; margin: 0 auto 32px; text-align: left; background: #0d1219; border: 1px solid var(--border);
     border-radius: 12px; padding: 16px 20px; font-family: var(--mono); font-size: .84rem; line-height: 1.8; overflow-x: auto;
   }
+  .install { position: relative; }
   .install .prompt { color: var(--text-dim); }
   .install .c { color: var(--text-dim); }
+  .install .copy { position: absolute; top: 12px; right: 12px; }
+  .final-links { font-size: .9rem; margin-top: -12px !important; }
+  .final-links a { color: var(--text-dim); }
+  .final-links a:hover { color: var(--accent); }
+
+  /* install pill (hero) */
+  header.hero .cta-row { margin-bottom: 24px; }
+  .install-pill {
+    display: inline-flex; align-items: center; gap: 14px; max-width: 100%;
+    background: #0d1219; border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 8px 8px 18px; font-family: var(--mono); font-size: .95rem;
+  }
+  .install-pill code { white-space: nowrap; overflow-x: auto; color: var(--text); }
+  .install-pill .prompt { color: var(--accent); }
+  .install-note { color: var(--text-dim); font-size: .82rem; margin: 10px 0 44px; }
+  .install-note a { color: var(--text-dim); }
+  .install-note a:hover { color: var(--accent); }
+  .copy {
+    background: var(--card); border: 1px solid var(--border); color: var(--text-dim);
+    font: 600 .78rem var(--sans); padding: 6px 12px; border-radius: 7px; cursor: pointer;
+  }
+  .copy:hover { color: var(--text); border-color: var(--accent); }
+  .copy.done { color: var(--ok); border-color: var(--ok); }
 
   footer { border-top: 1px solid var(--border); padding-block: 32px; text-align: center; color: var(--text-dim); font-size: 0.85rem; }
   footer a { color: var(--text-dim); text-decoration: underline; }
@@ -301,7 +325,7 @@
         <button type="button" data-lang="en">EN</button>
         <button type="button" data-lang="fr">FR</button>
       </div>
-      <a class="btn-git" href="https://gitlab.com/mlejeune/sosie" target="_blank" rel="noopener"><span lang="en">View on GitLab →</span><span lang="fr">Voir sur GitLab →</span></a>
+      <a class="btn-git" href="https://github.com/mlejeunedev/sosie" target="_blank" rel="noopener"><span lang="en">View on GitHub →</span><span lang="fr">Voir sur GitHub →</span></a>
     </div>
   </div>
 </nav>
@@ -320,8 +344,14 @@
     </p>
     <div class="cta-row">
       <a class="btn btn-primary" href="#how"><span lang="en">See how it works</span><span lang="fr">Voir comment ça marche</span></a>
-      <a class="btn btn-secondary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Read the docs</span><span lang="fr">Lire la doc</span></a>
+      <a class="btn btn-secondary" href="https://github.com/mlejeunedev/sosie/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Read the docs</span><span lang="fr">Lire la doc</span></a>
     </div>
+
+    <div class="install-pill">
+      <code><span class="prompt">$ </span>cargo install --locked sosie</code>
+      <button type="button" class="copy" data-copy="cargo install --locked sosie" aria-label="Copy install command"><span lang="en">Copy</span><span lang="fr">Copier</span></button>
+    </div>
+    <p class="install-note"><span lang="en">Requires a Rust toolchain ·</span><span lang="fr">Nécessite une toolchain Rust ·</span> <a href="https://crates.io/crates/sosie" target="_blank" rel="noopener">crates.io/crates/sosie</a></p>
 
     <div class="term" id="term" aria-label="Terminal demo">
       <div class="term-bar"><i></i><i></i><i></i></div>
@@ -621,26 +651,36 @@
     <h2 class="reveal"><span lang="en">Your production data has no business on your laptop.</span><span lang="fr">Ta prod n'a rien à faire sur ton laptop.</span></h2>
     <p class="reveal"><span lang="en">Sosie makes sure of it, in one command, without you having to think twice. Try it on your next dump.</span><span lang="fr">Sosie s'en assure, en une commande, sans que tu aies à y penser deux fois. Essaie-le sur ton prochain dump.</span></p>
     <div class="install reveal">
-      <div><span class="prompt">$ </span>git clone https://gitlab.com/mlejeune/sosie.git &amp;&amp; cd sosie</div>
-      <div><span class="prompt">$ </span>cargo build --release</div>
-      <div><span class="prompt">$ </span>./target/release/sosie init --from dump.sql --out sosie.yaml</div>
-      <div><span class="prompt">$ </span>./target/release/sosie check --from dump.sql --config sosie.yaml</div>
+      <button type="button" class="copy" data-copy="cargo install --locked sosie" aria-label="Copy install command"><span lang="en">Copy</span><span lang="fr">Copier</span></button>
+      <div><span class="c" lang="en"># 1. install from crates.io</span><span class="c" lang="fr"># 1. installer depuis crates.io</span></div>
+      <div><span class="prompt">$ </span>cargo install --locked sosie</div>
+      <div><span class="c" lang="en"># 2. generate a config from your dump, then check it</span><span class="c" lang="fr"># 2. générer une config depuis ton dump, puis la vérifier</span></div>
+      <div><span class="prompt">$ </span>sosie init --from dump.sql --out sosie.yaml</div>
+      <div><span class="prompt">$ </span>sosie check --from dump.sql --config sosie.yaml</div>
       <div><span class="c"># check OK: 6 tables, no sensitive column without a rule.</span></div>
+      <div><span class="c" lang="en"># 3. anonymize</span><span class="c" lang="fr"># 3. anonymiser</span></div>
+      <div><span class="prompt">$ </span>sosie transform --from dump.sql --config sosie.yaml --out dump_clean.sql</div>
     </div>
     <div class="cta-row reveal">
-      <a class="btn btn-primary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Get started now</span><span lang="fr">Commencer maintenant</span></a>
-      <a class="btn btn-secondary" href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/CONFIGURATION.md" target="_blank" rel="noopener"><span lang="en">See the configuration</span><span lang="fr">Voir la configuration</span></a>
+      <a class="btn btn-primary" href="https://crates.io/crates/sosie" target="_blank" rel="noopener"><span lang="en">Install from crates.io</span><span lang="fr">Installer depuis crates.io</span></a>
+      <a class="btn btn-secondary" href="https://github.com/mlejeunedev/sosie" target="_blank" rel="noopener"><span lang="en">★ Star on GitHub</span><span lang="fr">★ Étoiler sur GitHub</span></a>
+      <a class="btn btn-secondary" href="https://github.com/mlejeunedev/sosie/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Usage guide</span><span lang="fr">Guide d'utilisation</span></a>
     </div>
+    <p class="final-links reveal">
+      <a href="https://github.com/mlejeunedev/sosie/blob/main/docs/CONFIGURATION.md" target="_blank" rel="noopener"><span lang="en">Configuration reference</span><span lang="fr">Référence de configuration</span></a> ·
+      <a href="https://github.com/mlejeunedev/sosie/releases" target="_blank" rel="noopener"><span lang="en">Prebuilt binaries</span><span lang="fr">Binaires précompilés</span></a> ·
+      <a href="https://github.com/mlejeunedev/sosie/issues" target="_blank" rel="noopener"><span lang="en">Report an issue</span><span lang="fr">Signaler un problème</span></a>
+    </p>
   </div>
 </section>
 
 <footer>
   <div class="wrap">
     <span lang="en">Sosie — open source, under active development (v0.1).</span><span lang="fr">Sosie — open source, en développement actif (v0.1).</span>
-    <a href="https://gitlab.com/mlejeune/sosie" target="_blank" rel="noopener"><span lang="en">Source code</span><span lang="fr">Code source</span></a> ·
-    <a href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Usage guide</span><span lang="fr">Guide d'utilisation</span></a> ·
-    <a href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/CONFIGURATION.md" target="_blank" rel="noopener">Configuration</a> ·
-    <a href="https://gitlab.com/mlejeune/sosie/-/blob/main/docs/CAHIER_DES_CHARGES.md" target="_blank" rel="noopener"><span lang="en">Project vision</span><span lang="fr">Vision du projet</span></a>
+    <a href="https://github.com/mlejeunedev/sosie" target="_blank" rel="noopener"><span lang="en">Source code</span><span lang="fr">Code source</span></a> ·
+    <a href="https://github.com/mlejeunedev/sosie/blob/main/docs/USAGE.md" target="_blank" rel="noopener"><span lang="en">Usage guide</span><span lang="fr">Guide d'utilisation</span></a> ·
+    <a href="https://github.com/mlejeunedev/sosie/blob/main/docs/CONFIGURATION.md" target="_blank" rel="noopener">Configuration</a> ·
+    <a href="https://github.com/mlejeunedev/sosie/blob/main/docs/CAHIER_DES_CHARGES.md" target="_blank" rel="noopener"><span lang="en">Project vision</span><span lang="fr">Vision du projet</span></a>
   </div>
 </footer>
 
@@ -672,6 +712,19 @@
     });
     apply(document.documentElement.lang === 'fr' ? 'fr' : 'en');
   })();
+
+  // Copy-to-clipboard buttons for the install commands.
+  document.querySelectorAll('.copy[data-copy]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(b.getAttribute('data-copy')).then(function () {
+        var html = b.innerHTML;
+        b.classList.add('done');
+        b.innerHTML = '<span lang="en">Copied ✓</span><span lang="fr">Copié ✓</span>';
+        setTimeout(function () { b.classList.remove('done'); b.innerHTML = html; }, 1600);
+      });
+    });
+  });
 
   // Reveal sections progressively on scroll.
   (function () {

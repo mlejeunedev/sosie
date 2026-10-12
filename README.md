@@ -38,6 +38,8 @@ Sosie automates this with one simple rule: **by default, it refuses to run if a 
 
 ## Installation
 
+Sosie is published on [crates.io](https://crates.io/crates/sosie).
+
 **With Rust installed** (a recent stable toolchain from [rustup](https://rustup.rs); works on any OS, servers included):
 
 ```bash
