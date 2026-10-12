@@ -50,3 +50,4 @@ First public release.
 - No compressed output: compress it yourself (`sosie transform … | zstd -o out.sql.zst`).
 
 [0.1.0]: https://github.com/mlejeunedev/sosie/releases/tag/v0.1.0
+[0.2.0]: https://github.com/mlejeunedev/sosie/releases/tag/v0.2.0
