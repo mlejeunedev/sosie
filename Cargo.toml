@@ -1,6 +1,6 @@
 [package]
 name = "sosie"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Anonymize or pseudonymize a mysqldump dump in streaming, driven by a YAML config"
 license = "MIT OR Apache-2.0"
